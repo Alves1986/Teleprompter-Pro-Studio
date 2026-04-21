@@ -49,41 +49,46 @@ export default function App() {
   });
 
   const [activeTab, setActiveTab] = useState<'editor' | 'library' | 'prompter'>('editor');
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   // Gerenciar estado de autenticação
   useEffect(() => {
-    const initAuth = async () => {
+    let mounted = true;
+
+    const checkSession = async () => {
       if (!supabase || !supabase.auth) {
-        setAuthLoading(false);
+        if (mounted) setAuthLoading(false);
         return;
       }
 
       try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        if (error) throw error;
-        setSessionUser(session?.user ?? null);
-      } catch (err) {
-        console.error('Erro ao buscar sessão:', err);
-      } finally {
-        setAuthLoading(false);
-      }
-
-      // Verificação extra antes de chamar onAuthStateChanged
-      if (typeof supabase.auth.onAuthStateChanged === 'function') {
-        const { data } = supabase.auth.onAuthStateChanged((_event, session) => {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (mounted) {
           setSessionUser(session?.user ?? null);
-        });
-        return data?.subscription;
+          setAuthLoading(false);
+        }
+      } catch (err) {
+        console.error('Erro inicial de sessão:', err);
+        if (mounted) setAuthLoading(false);
       }
     };
 
-    let subscription: any;
-    initAuth().then(sub => {
-      subscription = sub;
-    });
+    checkSession();
+
+    let subscription: any = null;
+    
+    if (supabase?.auth && typeof supabase.auth.onAuthStateChanged === 'function') {
+      const { data } = supabase.auth.onAuthStateChanged((_event, session) => {
+        if (mounted) {
+          setSessionUser(session?.user ?? null);
+        }
+      });
+      subscription = data?.subscription;
+    }
 
     return () => {
-      if (subscription && typeof subscription.unsubscribe === 'function') {
+      mounted = false;
+      if (subscription?.unsubscribe) {
         subscription.unsubscribe();
       }
     };
@@ -129,13 +134,19 @@ export default function App() {
   }, [currentScript]);
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
-    setCurrentScript({ 
-      id: 'temp', 
-      title: 'Novo Roteiro Studio', 
-      content: 'Bem-vindo ao Teleprompter Pro...', 
-      lastModified: Date.now() 
-    });
+    try {
+      await supabase.auth.signOut();
+      setSessionUser(null);
+      setShowLogoutConfirm(false);
+      setCurrentScript({ 
+        id: 'temp', 
+        title: 'Novo Roteiro Studio', 
+        content: 'Bem-vindo ao Teleprompter Pro...', 
+        lastModified: Date.now() 
+      });
+    } catch (err) {
+      console.error('Erro ao sair:', err);
+    }
   };
 
   const updateConfig = (newCfg: Partial<PrompterConfig>) => setConfig(prev => ({ ...prev, ...newCfg }));
@@ -203,7 +214,7 @@ export default function App() {
               </span>
               <span className="text-[9px] text-gray-500 truncate">{sessionUser.email}</span>
             </div>
-            <button onClick={handleLogout} className="ml-2 p-1.5 hover:bg-red-500/20 rounded-md text-gray-500 hover:text-red-500 transition-colors shrink-0">
+            <button onClick={() => setShowLogoutConfirm(true)} className="ml-2 p-1.5 hover:bg-red-500/20 rounded-md text-gray-500 hover:text-red-500 transition-colors shrink-0" title="Sair da conta">
               <LogOut size={14} />
             </button>
           </div>
@@ -216,6 +227,34 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {showLogoutConfirm && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-[#1E2030] border border-gray-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl animate-in zoom-in duration-200">
+            <div className="flex items-center gap-3 mb-4 text-red-400 font-bold">
+              <LogOut size={20} />
+              <h3 className="text-lg">Confirmar Saída</h3>
+            </div>
+            <p className="text-gray-400 text-sm mb-6">
+              Você tem certeza que deseja encerrar sua sessão? Seus scripts salvos na nuvem estarão prontos quando você voltar.
+            </p>
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowLogoutConfirm(false)}
+                className="flex-1 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-xl font-medium transition-colors"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={handleLogout}
+                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold transition-all shadow-lg shadow-red-600/20"
+              >
+                Sair Agora
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="flex-1 overflow-hidden flex relative">
         {activeTab === 'editor' ? (

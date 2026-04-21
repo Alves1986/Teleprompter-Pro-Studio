@@ -10,20 +10,32 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
+      injectRegister: 'auto',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
       manifest: {
         name: 'Teleprompter Pro Studio',
-        short_name: 'Teleprompter',
-        description: 'Teleprompter App with AI capabilities.',
-        theme_color: '#0A0A0F',
+        short_name: 'TelePro',
+        description: 'Teleprompter profissional com recursos de IA e sincronização em nuvem.',
+        theme_color: '#1E2030',
         background_color: '#0A0A0F',
         display: 'standalone',
         orientation: 'portrait',
         icons: [
           {
             src: 'https://cdn-icons-png.flaticon.com/512/3140/3140134.png',
+            sizes: '192x192',
+            type: 'image/png'
+          },
+          {
+            src: 'https://cdn-icons-png.flaticon.com/512/3140/3140134.png',
             sizes: '512x512',
             type: 'image/png'
+          },
+          {
+            src: 'https://cdn-icons-png.flaticon.com/512/3140/3140134.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'any maskable'
           }
         ]
       }
