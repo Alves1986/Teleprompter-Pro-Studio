@@ -92,12 +92,12 @@ Inclua, de forma inteligente, alguns marcadores de formatação como [PAUSA] par
 Retorne apenas o texto do roteiro pronto.`;
       }
 
-      const model = aiClient.getGenerativeModel({
-        model: 'gemini-2.0-flash',
+      const response = await aiClient.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt
       });
-
-      const response = await model.generateContent(prompt);
-      const newContent = response.response.text() || '';
+      
+      const newContent = response.text || '';
       setAiPreview(newContent);
     } catch (err) {
       console.error(err);
