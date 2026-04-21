@@ -5,7 +5,16 @@ import { calculateStats } from '../utils';
 import { Printer, Pause, Quote, BarChart2, Info, Flag, AlertCircle, Sparkles, Loader2, X, Check, Save } from 'lucide-react';
 import { scriptsApi } from '../lib/supabase';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const getAiClient = () => {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '');
+  if (!apiKey) return null;
+  try {
+    return new GoogleGenAI(apiKey);
+  } catch (e) {
+    console.error('Falha ao inicializar GoogleGenAI:', e);
+    return null;
+  }
+};
 
 interface Props {
   script: SavedScript;
@@ -49,6 +58,12 @@ export default function Editor({ script, onChange }: Props) {
   }, [script.content, script.title]);
 
   const handleAiAction = async (type: 'improve' | 'summarize' | 'generate') => {
+    const aiClient = getAiClient();
+    if (!aiClient) {
+      alert('IA não configurada no Vercel. Adicione VITE_GEMINI_API_KEY nas variáveis de ambiente.');
+      return;
+    }
+
     setIsAiLoading(true);
     try {
       let prompt = "";
@@ -68,16 +83,16 @@ Inclua, de forma inteligente, alguns marcadores de formatação como [PAUSA] par
 Retorne apenas o texto do roteiro pronto.`;
       }
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.1-flash',
-        contents: prompt,
+      const model = aiClient.getGenerativeModel({
+        model: 'gemini-2.0-flash',
       });
 
-      const newContent = response.text || '';
+      const response = await model.generateContent(prompt);
+      const newContent = response.response.text() || '';
       setAiPreview(newContent);
     } catch (err) {
       console.error(err);
-      alert('Houve um erro ao processar com a IA Gemma 4.');
+      alert('Houve um erro ao processar com a IA.');
     } finally {
       setIsAiLoading(false);
       setAiPrompt("");
