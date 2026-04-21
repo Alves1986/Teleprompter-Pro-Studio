@@ -41,10 +41,8 @@ export default function Editor({ script, onChange }: Props) {
   
   const saveTimeoutRef = useRef<NodeJS.Timeout>(null);
 
-  // Auto-Save no Supabase com Debounce
+  // Auto-Save Local com Debounce
   useEffect(() => {
-    if (script.id === 'temp' || !script.id) return;
-
     // Se houve mudança, prepara para salvar
     setSaveStatus('saving');
 
@@ -56,10 +54,10 @@ export default function Editor({ script, onChange }: Props) {
         setSaveStatus('saved');
         setTimeout(() => setSaveStatus('idle'), 2000);
       } catch (err) {
-        console.error('Falha no auto-save Supabase:', err);
+        console.error('Falha no auto-save local:', err);
         setSaveStatus('error');
       }
-    }, 3000);
+    }, 1500);
 
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);

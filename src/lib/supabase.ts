@@ -21,61 +21,54 @@ if (!isConfigured) {
 
 export const scriptsApi = {
   async getAll() {
-    if (!isConfigured) return [];
-    
-    const { data, error } = await supabase
-      .from('scripts')
-      .select('*')
-      .order('last_modified', { ascending: false });
-    
-    if (error) throw error;
-    return data.map(item => ({
-      id: item.id,
-      title: item.title,
-      content: item.content,
-      lastModified: new Date(item.last_modified).getTime(),
-      tags: item.tags,
-      color: item.color,
-      duration: item.duration,
-      lastSynced: Date.now()
-    }));
+    const saved = localStorage.getItem('tp_scripts_local');
+    if (saved) {
+      return JSON.parse(saved);
+    }
+    return [];
   },
 
   async upsert(script: any) {
-    if (!isConfigured) throw new Error('Supabase não configurado');
+    const currentScriptsString = localStorage.getItem('tp_scripts_local');
+    let scripts: any[] = currentScriptsString ? JSON.parse(currentScriptsString) : [];
+    
+    // Simulate an auto-generated ID if temp or empty. 
+    // We keep UUID-like lengths if we want to be safe, but Date.now is fine
+    const isNew = !script.id || script.id === 'temp';
+    const idToUse = isNew ? Date.now().toString() : script.id;
 
-    const payload: any = {
+    const newScriptObj = {
+      id: idToUse,
       title: script.title,
       content: script.content,
-      last_modified: new Date(script.lastModified).toISOString(),
-      tags: script.tags,
+      lastModified: script.lastModified || Date.now(),
+      tags: script.tags || [],
       color: script.color,
-      duration: script.duration
+      duration: script.duration,
+      lastSynced: Date.now()
     };
 
-    // Só envia o ID se for um UUID válido (existente no banco)
-    if (script.id && script.id.length > 20) {
-      payload.id = script.id;
+    if (isNew) {
+      scripts.push(newScriptObj);
+    } else {
+      const index = scripts.findIndex(s => s.id === script.id);
+      if (index >= 0) {
+        scripts[index] = newScriptObj;
+      } else {
+        scripts.push(newScriptObj);
+      }
     }
 
-    const { data, error } = await supabase
-      .from('scripts')
-      .upsert(payload)
-      .select()
-      .single();
-
-    if (error) throw error;
-    return data;
+    localStorage.setItem('tp_scripts_local', JSON.stringify(scripts));
+    return newScriptObj;
   },
 
   async delete(id: string) {
-    if (!isConfigured) throw new Error('Supabase não configurado');
-
-    const { error } = await supabase
-      .from('scripts')
-      .delete()
-      .eq('id', id);
+    const currentScriptsString = localStorage.getItem('tp_scripts_local');
+    let scripts: any[] = currentScriptsString ? JSON.parse(currentScriptsString) : [];
     
-    if (error) throw error;
+    scripts = scripts.filter(s => s.id !== id);
+    localStorage.setItem('tp_scripts_local', JSON.stringify(scripts));
   }
 };
+

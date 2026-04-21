@@ -24,17 +24,12 @@ export default function ScriptManager({ scripts, setScripts, onSelect, currentId
       };
       
       const saved = await scriptsApi.upsert(newScript);
-      const scriptWithRealId = {
-        ...newScript,
-        id: saved.id,
-        lastModified: new Date(saved.last_modified).getTime()
-      };
       
-      setScripts(prev => [scriptWithRealId, ...prev]);
-      onSelect(scriptWithRealId);
+      setScripts(prev => [saved, ...prev]);
+      onSelect(saved);
     } catch (err) {
-      console.error('Erro ao criar roteiro no Supabase:', err);
-      alert('Falha ao sincronizar com banco de dados. Verifique sua conexão.');
+      console.error('Erro ao criar roteiro localmente:', err);
+      alert('Falha ao salvar roteiro.');
     } finally {
       setIsProcessing(false);
     }
@@ -72,17 +67,12 @@ export default function ScriptManager({ scripts, setScripts, onSelect, currentId
         };
         
         const saved = await scriptsApi.upsert(newScript);
-        const scriptWithRealId = {
-          ...newScript,
-          id: saved.id,
-          lastModified: new Date(saved.last_modified).getTime()
-        };
-
-        setScripts(prev => [scriptWithRealId, ...prev]);
-        onSelect(scriptWithRealId);
+        
+        setScripts(prev => [saved, ...prev]);
+        onSelect(saved);
       } catch (err) {
-        console.error('Erro ao importar para o Supabase:', err);
-        alert('Erro na importação.');
+        console.error('Erro ao importar:', err);
+        alert('Erro na importação local.');
       } finally {
         setIsProcessing(false);
       }

@@ -35,7 +35,7 @@ export default function App() {
 
   const [scripts, setScripts] = useState<SavedScript[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isOnline, setIsOnline] = useState(true);
+  const [isOnline, setIsOnline] = useState(false); // Sempre local agora
 
   const [currentScript, setCurrentScript] = useState<SavedScript>(() => {
     const saved = localStorage.getItem('tp_current_script');
@@ -49,135 +49,43 @@ export default function App() {
   });
 
   const [activeTab, setActiveTab] = useState<'editor' | 'library' | 'prompter'>('editor');
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
-  // Gerenciar estado de autenticação
+  // Carregar scripts do LocalStorage ao montar
   useEffect(() => {
-    let mounted = true;
-
-    const checkSession = async () => {
-      // Se não estiver configurado, pula a autenticação
-      if (!isConfigured || !supabase?.auth) {
-        if (mounted) setAuthLoading(false);
-        return;
-      }
-
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (mounted) {
-          setSessionUser(session?.user ?? null);
-          setAuthLoading(false);
-        }
-      } catch (err) {
-        console.error('Erro inicial de sessão:', err);
-        if (mounted) setAuthLoading(false);
-      }
-    };
-
-    checkSession();
-
-    let subscription: any = null;
-    
-    if (isConfigured && supabase?.auth && typeof supabase.auth.onAuthStateChanged === 'function') {
-      const { data } = supabase.auth.onAuthStateChanged((event, session) => {
-        if (mounted) {
-          setSessionUser(session?.user ?? null);
-          // Se for carregamento inicial ou login, garante que o loading pare
-          if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN' || event === 'SIGNED_OUT') {
-            setAuthLoading(false);
-          }
-        }
-      });
-      subscription = data?.subscription;
-    }
-
-    return () => {
-      mounted = false;
-      if (subscription?.unsubscribe) {
-        subscription.unsubscribe();
-      }
-    };
-  }, []);
-
-  // Carregar scripts do Supabase ao montar/mudar usuário
-  useEffect(() => {
-    if (!sessionUser) {
-      setScripts([]);
-      return;
-    }
-
     async function loadScripts() {
       setIsLoading(true);
       try {
         const fetchedScripts = await scriptsApi.getAll();
         setScripts(fetchedScripts);
-        setIsOnline(true);
       } catch (err) {
-        console.error('Falha ao carregar do Supabase, usando backup local', err);
-        const saved = localStorage.getItem(`tp_scripts_${sessionUser.id}`);
-        if (saved) setScripts(JSON.parse(saved));
-        setIsOnline(false);
+        console.error('Falha ao carregar do Storage Local', err);
       } finally {
         setIsLoading(false);
       }
     }
     loadScripts();
-  }, [sessionUser]);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('tp_config', JSON.stringify(config));
   }, [config]);
 
   useEffect(() => {
-    if (sessionUser && scripts.length > 0) {
-      localStorage.setItem(`tp_scripts_${sessionUser.id}`, JSON.stringify(scripts));
+    if (scripts.length > 0) {
+      localStorage.setItem('tp_scripts_local_backup', JSON.stringify(scripts));
     }
-  }, [scripts, sessionUser]);
+  }, [scripts]);
 
   useEffect(() => {
     localStorage.setItem('tp_current_script', JSON.stringify(currentScript));
   }, [currentScript]);
 
-  const handleLogout = async () => {
-    // Sair de forma otimista para evitar loop visual ou travamento do botão
-    setSessionUser(null);
-    setShowLogoutConfirm(false);
-    setActiveTab('editor'); // Volta para o editor se estiver em outra aba
-    
-    try {
-      if (isConfigured && supabase?.auth) {
-        await supabase.auth.signOut();
-      }
-    } catch (err) {
-      console.error('Erro ao sair no servidor:', err);
-    } finally {
-      // Garante que o estado local reseta independente do servidor
-      setCurrentScript({ 
-        id: 'temp', 
-        title: 'Novo Roteiro Studio', 
-        content: 'Bem-vindo ao Teleprompter Pro...', 
-        lastModified: Date.now() 
-      });
-    }
-  };
-
   const updateConfig = (newCfg: Partial<PrompterConfig>) => setConfig(prev => ({ ...prev, ...newCfg }));
-
-  if (authLoading) {
-    return (
-      <div className="min-h-screen bg-[#0A0A0F] flex items-center justify-center">
-        <Loader2 className="animate-spin text-amber-500" size={40} />
-      </div>
-    );
-  }
-
-  if (!sessionUser) {
-    return <Login onLoginSuccess={(user) => setSessionUser(user)} />;
-  }
 
   if (activeTab === 'prompter') {
     return <PrompterView script={currentScript} config={config} onUpdateConfig={updateConfig} onClose={() => setActiveTab('editor')} />;
   }
+
 
   return (
     <div className="h-screen bg-[#0A0A0F] text-gray-200 font-sans flex flex-col focus:outline-none overflow-hidden">
@@ -216,19 +124,8 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-3 w-full sm:w-auto">
-          <div className="flex items-center gap-2 bg-black/40 px-3 py-2 rounded-lg border border-gray-800 overflow-hidden max-w-[180px] sm:max-w-none">
-            <div className="w-6 h-6 rounded-full bg-amber-500/20 flex items-center justify-center border border-amber-500/30">
-              <User size={14} className="text-amber-500" />
-            </div>
-            <div className="flex flex-col min-w-0">
-              <span className="text-xs font-bold text-white truncate">
-                {sessionUser.user_metadata?.full_name || sessionUser.email?.split('@')[0]}
-              </span>
-              <span className="text-[9px] text-gray-500 truncate">{sessionUser.email}</span>
-            </div>
-            <button onClick={() => setShowLogoutConfirm(true)} className="ml-2 p-1.5 hover:bg-red-500/20 rounded-md text-gray-500 hover:text-red-500 transition-colors shrink-0" title="Sair da conta">
-              <LogOut size={14} />
-            </button>
+          <div className="flex items-center justify-center gap-2 px-4 py-2 border border-gray-800 rounded-lg text-xs bg-black/30 font-mono text-gray-500">
+            Armazenamento Local Ativo
           </div>
           
           <button 
@@ -239,34 +136,6 @@ export default function App() {
           </button>
         </div>
       </header>
-
-      {showLogoutConfirm && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-[#1E2030] border border-gray-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl animate-in zoom-in duration-200">
-            <div className="flex items-center gap-3 mb-4 text-red-400 font-bold">
-              <LogOut size={20} />
-              <h3 className="text-lg">Confirmar Saída</h3>
-            </div>
-            <p className="text-gray-400 text-sm mb-6">
-              Você tem certeza que deseja encerrar sua sessão? Seus scripts salvos na nuvem estarão prontos quando você voltar.
-            </p>
-            <div className="flex gap-3">
-              <button 
-                onClick={() => setShowLogoutConfirm(false)}
-                className="flex-1 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-xl font-medium transition-colors"
-              >
-                Cancelar
-              </button>
-              <button 
-                onClick={handleLogout}
-                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold transition-all shadow-lg shadow-red-600/20"
-              >
-                Sair Agora
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <main className="flex-1 overflow-hidden flex relative">
         {activeTab === 'editor' ? (
