@@ -6,10 +6,19 @@ import { Printer, Pause, Quote, BarChart2, Info, Flag, AlertCircle, Sparkles, Lo
 import { scriptsApi } from '../lib/supabase';
 
 const getAiClient = () => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '');
-  if (!apiKey) return null;
+  // O Vite resolve o VITE_ statically, e o AI Studio injeta no process.env para seu preview interno
+  let apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  
+  if (!apiKey && typeof process !== 'undefined' && process.env) {
+    apiKey = process.env.GEMINI_API_KEY;
+  }
+
+  if (!apiKey || apiKey.trim() === '') {
+    return null;
+  }
+
   try {
-    return new GoogleGenAI(apiKey);
+    return new GoogleGenAI({ apiKey });
   } catch (e) {
     console.error('Falha ao inicializar GoogleGenAI:', e);
     return null;
