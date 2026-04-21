@@ -1,8 +1,12 @@
 import { useState } from 'react';
-import { supabase } from '../lib/supabase';
-import { Mail, Lock, Loader2, AlertCircle, Terminal, User, Check } from 'lucide-react';
+import { supabase, isConfigured } from '../lib/supabase';
+import { Mail, Lock, Loader2, AlertCircle, Terminal, User, Check, Settings } from 'lucide-react';
 
-export default function Login() {
+interface Props {
+  onLoginSuccess?: (user: any) => void;
+}
+
+export default function Login({ onLoginSuccess }: Props) {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -38,6 +42,20 @@ export default function Login() {
         setPassword('');
         setLoading(false);
         return;
+      }
+
+      if (mode === 'login') {
+        if (!data.session) {
+          setError('Sessão não iniciada. Verifique se o seu e-mail foi confirmado.');
+          setLoading(false);
+          return;
+        }
+        
+        // Garante que o loading para e atualiza o estado primário
+        setLoading(false);
+        if (onLoginSuccess) {
+          onLoginSuccess(data.session.user);
+        }
       }
 
     } catch (err: any) {
@@ -116,6 +134,19 @@ export default function Login() {
             </div>
           )}
 
+          {!isConfigured && (
+            <div className="bg-amber-500/10 border border-amber-500/30 p-4 rounded-xl flex flex-col gap-2 text-amber-500 text-sm mb-4">
+              <div className="flex items-center gap-2 font-bold">
+                <Settings size={18} />
+                Banco de Dados não configurado
+              </div>
+              <p className="text-[11px] leading-relaxed opacity-80">
+                Para usar o login e salvar na nuvem, você precisa adicionar as chaves do Supabase no menu 
+                <strong className="text-white"> Secrets/Settings</strong> da plataforma.
+              </p>
+            </div>
+          )}
+
           {success && (
             <div className="bg-green-500/10 border border-green-500/30 p-3 rounded-lg flex items-center gap-2 text-green-500 text-sm">
               <Check size={16} />
@@ -125,7 +156,7 @@ export default function Login() {
 
           <button 
             type="submit" 
-            disabled={loading}
+            disabled={loading || !isConfigured}
             className="bg-amber-600 hover:bg-amber-500 text-black py-3 rounded-xl font-bold transition-all shadow-lg hover:shadow-amber-500/20 mt-2 flex justify-center items-center gap-2 disabled:opacity-50"
           >
             {loading ? <Loader2 className="animate-spin" size={20} /> : (mode === 'login' ? 'Entrar Agora' : 'Criar Conta')}

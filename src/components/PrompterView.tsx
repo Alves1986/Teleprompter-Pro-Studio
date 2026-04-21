@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { PrompterConfig, AppTheme, SavedScript, Bookmark } from '../types';
 import ControlsHud from './ControlsHud';
-import { Pause } from 'lucide-react';
+import { Pause, Play } from 'lucide-react';
 
 interface Props {
   script: SavedScript;
@@ -256,6 +256,7 @@ export default function PrompterView({ script, config, onUpdateConfig, onClose }
       <div 
         ref={scrollRef}
         onScroll={handleManualScroll}
+        onDoubleClick={() => setIsPlaying(!isPlaying)}
         className={`flex-1 overflow-y-auto no-scrollbar pt-[50vh] pb-[50vh] relative z-10 ${getTransformClasses()}`}
         style={{ 
           fontSize: `${config.fontSize}px`, 
@@ -306,6 +307,16 @@ export default function PrompterView({ script, config, onUpdateConfig, onClose }
              }
              return null;
           })}
+      </div>
+
+      {/* Floating Play/Pause Button */}
+      <div className={`absolute bottom-8 right-8 z-[60] transition-opacity duration-500 ${isPlaying ? 'opacity-20 hover:opacity-100' : 'opacity-100'}`}>
+         <button 
+           onClick={() => setIsPlaying(!isPlaying)}
+           className={`w-16 h-16 rounded-full flex items-center justify-center shadow-2xl transition-all hover:scale-105 active:scale-95 ${isPlaying ? 'bg-[#1E2030] text-amber-500 border border-amber-500/30' : 'bg-amber-500 text-[#0A0A0F] shadow-amber-500/20'}`}
+         >
+           {isPlaying ? <Pause size={32} fill="currentColor" /> : <Play size={32} fill="currentColor" className="ml-1" />}
+         </button>
       </div>
 
       <ControlsHud 

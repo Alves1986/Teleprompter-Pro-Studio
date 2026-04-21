@@ -5,7 +5,7 @@ import ScriptManager from './components/ScriptManager';
 import PrompterView from './components/PrompterView';
 import Login from './components/Login';
 import { Terminal, FileText, Library, Play, Cloud, CloudOff, LogOut, User, Loader2 } from 'lucide-react';
-import { supabase, scriptsApi } from './lib/supabase';
+import { supabase, scriptsApi, isConfigured } from './lib/supabase';
 import { User as SupabaseUser } from '@supabase/supabase-js';
 
 const DEFAULT_CONFIG: PrompterConfig = {
@@ -56,7 +56,8 @@ export default function App() {
     let mounted = true;
 
     const checkSession = async () => {
-      if (!supabase || !supabase.auth) {
+      // Se não estiver configurado, pula a autenticação
+      if (!isConfigured || !supabase?.auth) {
         if (mounted) setAuthLoading(false);
         return;
       }
@@ -77,10 +78,14 @@ export default function App() {
 
     let subscription: any = null;
     
-    if (supabase?.auth && typeof supabase.auth.onAuthStateChanged === 'function') {
-      const { data } = supabase.auth.onAuthStateChanged((_event, session) => {
+    if (isConfigured && supabase?.auth && typeof supabase.auth.onAuthStateChanged === 'function') {
+      const { data } = supabase.auth.onAuthStateChanged((event, session) => {
         if (mounted) {
           setSessionUser(session?.user ?? null);
+          // Se for carregamento inicial ou login, garante que o loading pare
+          if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN' || event === 'SIGNED_OUT') {
+            setAuthLoading(false);
+          }
         }
       });
       subscription = data?.subscription;
@@ -134,18 +139,25 @@ export default function App() {
   }, [currentScript]);
 
   const handleLogout = async () => {
+    // Sair de forma otimista para evitar loop visual ou travamento do botão
+    setSessionUser(null);
+    setShowLogoutConfirm(false);
+    setActiveTab('editor'); // Volta para o editor se estiver em outra aba
+    
     try {
-      await supabase.auth.signOut();
-      setSessionUser(null);
-      setShowLogoutConfirm(false);
+      if (isConfigured && supabase?.auth) {
+        await supabase.auth.signOut();
+      }
+    } catch (err) {
+      console.error('Erro ao sair no servidor:', err);
+    } finally {
+      // Garante que o estado local reseta independente do servidor
       setCurrentScript({ 
         id: 'temp', 
         title: 'Novo Roteiro Studio', 
         content: 'Bem-vindo ao Teleprompter Pro...', 
         lastModified: Date.now() 
       });
-    } catch (err) {
-      console.error('Erro ao sair:', err);
     }
   };
 
@@ -160,7 +172,7 @@ export default function App() {
   }
 
   if (!sessionUser) {
-    return <Login />;
+    return <Login onLoginSuccess={(user) => setSessionUser(user)} />;
   }
 
   if (activeTab === 'prompter') {
