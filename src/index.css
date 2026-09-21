@@ -62,3 +62,46 @@ body {
 .prompter-mirror-both {
   transform: scale(-1, -1);
 }
+
+/* Safe Area Insets for Mobile (iPhone Dynamic Island / Notch / Android Navigation) */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+.pt-safe {
+  padding-top: max(12px, env(safe-area-inset-top, 0px));
+}
+
+.pb-safe {
+  padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+}
+
+.pl-safe {
+  padding-left: max(12px, env(safe-area-inset-left, 0px));
+}
+
+.pr-safe {
+  padding-right: max(12px, env(safe-area-inset-right, 0px));
+}
+
+.top-safe {
+  top: max(12px, env(safe-area-inset-top, 0px));
+}
+
+.bottom-safe {
+  bottom: max(12px, env(safe-area-inset-bottom, 0px));
+}
+
+/* Utility to hide scrollbars smoothly */
+.no-scrollbar::-webkit-scrollbar,
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar,
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

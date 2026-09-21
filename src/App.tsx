@@ -11,6 +11,7 @@ import RemotePairModal from './components/RemotePairModal';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import InstallAppBanner from './components/InstallAppBanner';
 import InstallGuideModal from './components/InstallGuideModal';
+import { RemoteClient } from './services/remoteService';
 
 const DEFAULT_CONFIG: PrompterConfig = {
   speed: 2,
@@ -107,74 +108,56 @@ export default function App() {
     };
   });
 
-  // Maintain host WebSocket connection when on main dashboard to track paired controllers and allow remote triggers
+  // Maintain host connection when on main dashboard to track paired controllers and allow remote triggers
   useEffect(() => {
     if (activeTab === 'prompter' || activeTab === 'remote') return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws-remote`;
-    let ws: WebSocket | null = null;
-
-    const sendSyncState = (socket: WebSocket | null) => {
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-          type: 'sync_state',
-          isPlaying: false,
-          speed: config.speed,
-          fontSize: config.fontSize,
-          progressPercent: 0,
-          scriptTitle: currentScript.title,
-          wordCount: currentScript.content.split(/\s+/).filter(Boolean).length,
-          inEditor: true
-        }));
-      }
-    };
-
-    try {
-      ws = new WebSocket(wsUrl);
-
-      ws.onopen = () => {
-        ws?.send(JSON.stringify({
-          type: 'join',
-          room: roomCode,
-          role: 'host'
-        }));
-        sendSyncState(ws);
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'room_status') {
-            setControllersCount(msg.controllersCount || 0);
-          } else if (msg.type === 'request_sync') {
-            sendSyncState(ws);
-          } else if (msg.type === 'command') {
-            if (msg.action === 'play' || msg.action === 'toggle_play') {
-              setAutoPlayPrompter(true);
-              setActiveTab('prompter');
-            } else if (msg.action === 'speed_up') {
-              updateConfig({ speed: Math.min(10, +(config.speed + 0.5).toFixed(1)) });
-            } else if (msg.action === 'speed_down') {
-              updateConfig({ speed: Math.max(0.5, +(config.speed - 0.5).toFixed(1)) });
-            } else if (msg.action === 'font_up') {
-              updateConfig({ fontSize: Math.min(150, config.fontSize + 4) });
-            } else if (msg.action === 'font_down') {
-              updateConfig({ fontSize: Math.max(20, config.fontSize - 4) });
-            }
-          }
-        } catch (err) {
-          console.error('App WS error:', err);
+    const client = new RemoteClient(roomCode, 'host', {
+      onCommand: (action, payload) => {
+        if (action === 'play' || action === 'toggle_play') {
+          setAutoPlayPrompter(true);
+          setActiveTab('prompter');
+        } else if (action === 'speed_up') {
+          updateConfig({ speed: Math.min(10, +(config.speed + 0.5).toFixed(1)) });
+        } else if (action === 'speed_down') {
+          updateConfig({ speed: Math.max(0.5, +(config.speed - 0.5).toFixed(1)) });
+        } else if (action === 'set_speed' && typeof payload?.speed === 'number') {
+          updateConfig({ speed: payload.speed });
+        } else if (action === 'font_up') {
+          updateConfig({ fontSize: Math.min(150, config.fontSize + 4) });
+        } else if (action === 'font_down') {
+          updateConfig({ fontSize: Math.max(20, config.fontSize - 4) });
+        } else if (action === 'set_font' && typeof payload?.fontSize === 'number') {
+          updateConfig({ fontSize: payload.fontSize });
+        } else if (action === 'request_sync') {
+          client.syncState({
+            isPlaying: false,
+            speed: config.speed,
+            fontSize: config.fontSize,
+            progressPercent: 0,
+            scriptTitle: currentScript.title,
+            wordCount: currentScript.content.split(/\s+/).filter(Boolean).length,
+            inEditor: true
+          });
         }
-      };
-    } catch (e) {
-      console.warn('WebSocket connection error:', e);
-    }
+      },
+      onStatus: (status) => {
+        setControllersCount(status.controllersCount);
+      }
+    });
+
+    client.syncState({
+      isPlaying: false,
+      speed: config.speed,
+      fontSize: config.fontSize,
+      progressPercent: 0,
+      scriptTitle: currentScript.title,
+      wordCount: currentScript.content.split(/\s+/).filter(Boolean).length,
+      inEditor: true
+    });
 
     return () => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      }
+      client.destroy();
     };
   }, [roomCode, activeTab, config.speed, config.fontSize, currentScript.title, currentScript.content]);
 
@@ -288,52 +271,65 @@ export default function App() {
 
 
   return (
-    <div className="h-screen bg-[#0A0A0F] text-gray-200 font-sans flex flex-col focus:outline-none overflow-hidden">
-      <header className="bg-[#1E2030] border-b border-gray-800 p-4 flex flex-col sm:flex-row flex-wrap lg:flex-nowrap items-center justify-between shadow-md z-10 gap-4">
-        <div className="flex items-center gap-2">
-          <Terminal size={28} className="text-amber-500" />
-          <h1 className="text-xl font-display font-bold text-white tracking-wide">
-            Teleprompter<span className="text-amber-500">Pro</span>
-            <span className="text-[10px] uppercase font-bold tracking-widest text-[#1E2030] bg-amber-500 px-2 py-0.5 rounded ml-3 align-middle hidden sm:inline-block">STUDIO</span>
-          </h1>
-          <div className="flex items-center gap-1 ml-4 border-l border-gray-800 pl-4">
-            {isOnline ? (
-              <Cloud size={16} className="text-green-500" />
-            ) : (
-              <CloudOff size={16} className="text-red-500" />
-            )}
-            <span className="text-[10px] uppercase tracking-tighter text-gray-500 font-mono">
-              {isOnline ? 'Cloud' : 'Local'}
-            </span>
+    <div className="h-[100dvh] min-h-[100dvh] max-h-[100dvh] bg-[#0A0A0F] text-gray-200 font-sans flex flex-col focus:outline-none overflow-hidden">
+      <header className="bg-[#1E2030] border-b border-gray-800 pt-[max(0.6rem,env(safe-area-inset-top))] px-3 sm:px-6 pb-2.5 sm:pb-3 flex flex-col lg:flex-row items-stretch lg:items-center justify-between shadow-md z-10 gap-2.5 sm:gap-4 shrink-0">
+        {/* Top bar: Brand logo and status, plus mobile action button */}
+        <div className="flex items-center justify-between gap-2 w-full lg:w-auto">
+          <div className="flex items-center gap-2 min-w-0">
+            <Terminal size={22} className="text-amber-500 shrink-0" />
+            <h1 className="text-lg sm:text-xl font-display font-bold text-white tracking-wide flex items-center truncate">
+              Teleprompter<span className="text-amber-500">Pro</span>
+              <span className="text-[9px] uppercase font-bold tracking-widest text-[#1E2030] bg-amber-500 px-1.5 py-0.5 rounded ml-2 align-middle hidden sm:inline-block">STUDIO</span>
+            </h1>
+            <div className="flex items-center gap-1 ml-2 sm:ml-3 border-l border-gray-800 pl-2 sm:pl-3 shrink-0">
+              {isOnline ? (
+                <Cloud size={14} className="text-green-500 shrink-0" />
+              ) : (
+                <CloudOff size={14} className="text-red-500 shrink-0" />
+              )}
+              <span className="text-[10px] uppercase tracking-tighter text-gray-400 font-mono">
+                {isOnline ? 'Cloud' : 'Local'}
+              </span>
+            </div>
           </div>
+
+          {/* Quick Present Button on mobile right next to logo for immediate access */}
+          <button 
+            onClick={() => setActiveTab('prompter')}
+            className="lg:hidden bg-amber-500 hover:bg-amber-400 text-black px-3.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all shadow-md shadow-amber-500/20 uppercase text-xs tracking-wider shrink-0"
+            title="Iniciar Teleprompter"
+          >
+            <Play size={13} fill="currentColor" /> Apresentar
+          </button>
         </div>
 
-        <div className="flex bg-black/50 p-1 rounded-lg border border-gray-800 w-full lg:w-auto overflow-x-auto justify-start lg:justify-center">
+        {/* Navigation Tabs Bar */}
+        <div className="flex bg-black/50 p-1 rounded-lg border border-gray-800 w-full lg:w-auto overflow-x-auto no-scrollbar scroll-smooth items-center gap-1 justify-start lg:justify-center">
           <button 
             onClick={() => setActiveTab('editor')}
-            className={`flex items-center gap-2 px-4 sm:px-5 py-2 rounded-md transition-all text-sm font-medium whitespace-nowrap ${activeTab === 'editor' ? 'bg-[#1E2030] text-amber-500 shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
+            className={`flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 ${activeTab === 'editor' ? 'bg-[#1E2030] text-amber-500 shadow-sm font-semibold' : 'text-gray-400 hover:text-gray-200'}`}
           >
-            <FileText size={18} /> Editor
+            <FileText size={15} /> <span>Editor</span>
           </button>
           <button 
             onClick={() => setActiveTab('library')}
-            className={`flex items-center gap-2 px-4 sm:px-5 py-2 rounded-md transition-all text-sm font-medium whitespace-nowrap ${activeTab === 'library' ? 'bg-[#1E2030] text-amber-500 shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
+            className={`flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 ${activeTab === 'library' ? 'bg-[#1E2030] text-amber-500 shadow-sm font-semibold' : 'text-gray-400 hover:text-gray-200'}`}
           >
-            <Library size={18} /> Biblioteca
+            <Library size={15} /> <span>Biblioteca</span>
           </button>
           <button 
             onClick={() => setIsRemoteModalOpen(true)}
-            className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-md transition-all text-sm font-semibold whitespace-nowrap border ${
+            className={`flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 border ${
               controllersCount > 0 
                 ? 'bg-emerald-950/70 border-emerald-500/80 text-emerald-400 shadow-sm' 
                 : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border-amber-500/30'
             }`}
-            title="Exibir QR Code para conectar seu celular ou tablet como controle remoto sem fio"
+            title="Exibir QR Code para conectar celular ou tablet como controle remoto"
           >
-            <QrCode size={18} />
-            <span>Parear Celular (QR Code)</span>
+            <QrCode size={15} />
+            <span>Parear Remoto</span>
             {controllersCount > 0 && (
-              <span className="flex items-center gap-1 text-[11px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded-full font-mono font-normal">
+              <span className="flex items-center gap-1 text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded-full font-mono font-normal">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                 {controllersCount}
               </span>
@@ -341,37 +337,35 @@ export default function App() {
           </button>
           <button 
             onClick={() => setIsShortcutsOpen(true)}
-            className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-md transition-all text-sm font-medium whitespace-nowrap text-gray-400 hover:text-amber-400 hover:bg-[#1E2030]"
-            title="Mapeamento visual de atalhos de teclado e pedais Bluetooth"
+            className="flex items-center gap-1.5 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 text-gray-400 hover:text-amber-400 hover:bg-[#1E2030]"
+            title="Mapeamento de atalhos e pedais Bluetooth"
           >
-            <Keyboard size={18} /> Atalhos & Pedais
+            <Keyboard size={15} /> <span>Atalhos</span>
           </button>
 
           {!pwaState.isInstalled && (
             <button
               onClick={() => setIsInstallGuideOpen(true)}
-              className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-md transition-all text-sm font-semibold whitespace-nowrap bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 shadow-sm"
-              title={`Baixar aplicativo para ${pwaState.platformName}`}
+              className="flex items-center gap-1.5 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 shadow-sm"
+              title={`Instalar aplicativo`}
             >
-              <Download size={18} />
-              <span>Baixar App</span>
-              <span className="text-[10px] uppercase font-bold text-amber-300 bg-amber-400/20 px-1.5 py-0.5 rounded-full hidden sm:inline">
-                {pwaState.platformName}
-              </span>
+              <Download size={14} />
+              <span>Instalar</span>
             </button>
           )}
         </div>
 
-        <div className="flex items-center gap-3 w-full sm:w-auto">
-          <div className="flex items-center justify-center gap-2 px-4 py-2 border border-gray-800 rounded-lg text-xs bg-black/30 font-mono text-gray-500">
-            Armazenamento Local Ativo
+        {/* Desktop Presentation & Status Action */}
+        <div className="hidden lg:flex items-center gap-3">
+          <div className="flex items-center justify-center gap-2 px-3 py-1.5 border border-gray-800 rounded-lg text-xs bg-black/30 font-mono text-gray-400">
+            Armazenamento Ativo
           </div>
           
           <button 
             onClick={() => setActiveTab('prompter')}
-            className="bg-amber-600 hover:bg-amber-500 text-black px-4 sm:px-6 py-2.5 rounded-lg font-bold flex flex-1 sm:flex-none items-center justify-center gap-2 transition-all shadow-lg hover:shadow-amber-500/20 uppercase text-sm tracking-wider"
+            className="bg-amber-600 hover:bg-amber-500 text-black px-5 py-2 rounded-lg font-bold flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-amber-500/20 uppercase text-xs tracking-wider"
           >
-            <Play size={18} fill="currentColor" /> Apresentar
+            <Play size={16} fill="currentColor" /> Apresentar
           </button>
         </div>
       </header>

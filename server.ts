@@ -29,10 +29,36 @@ async function startServer() {
 
   app.use(express.json());
 
-  // Real-Time Remote Control WebSocket Server
-  const wss = new WebSocketServer({ server, path: '/ws-remote' });
+  // Real-Time Remote Control WebSocket Server & REST Fallback
+  const wss = new WebSocketServer({ noServer: true });
   const rooms = new Map<string, RoomClient[]>();
   const roomStates = new Map<string, any>();
+  const roomCommands = new Map<string, { id: number; action: string; payload: any; timestamp: number }[]>();
+  let commandCounter = 1;
+
+  // Handle HTTP Upgrade explicitly so Vite or proxy doesn't drop it
+  server.on('upgrade', (request, socket, head) => {
+    try {
+      const url = new URL(request.url || '', `http://${request.headers.host || 'localhost'}`);
+      if (url.pathname === '/ws-remote') {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wss.emit('connection', ws, request);
+        });
+      }
+    } catch (e) {
+      console.error('WS upgrade error:', e);
+    }
+  });
+
+  const getRoomControllersCount = (roomCode: string) => {
+    const list = rooms.get(roomCode) || [];
+    return list.filter(c => c.role === 'controller' && c.ws.readyState === WebSocket.OPEN).length;
+  };
+
+  const getRoomHasHost = (roomCode: string) => {
+    const list = rooms.get(roomCode) || [];
+    return list.some(c => c.role === 'host' && c.ws.readyState === WebSocket.OPEN);
+  };
 
   const broadcastToRoom = (roomCode: string, payload: any) => {
     const clients = rooms.get(roomCode);
@@ -63,8 +89,17 @@ async function startServer() {
     ws.on('message', (raw) => {
       try {
         const data = JSON.parse(raw.toString());
+
+        // Heartbeat ping-pong
+        if (data.type === 'ping') {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'pong' }));
+          }
+          return;
+        }
+
         if (data.type === 'join') {
-          currentRoom = (data.room || 'DEFAULT').trim().toUpperCase();
+          currentRoom = (data.room || 'STUDIO1').trim().toUpperCase();
           currentRole = data.role === 'host' ? 'host' : 'controller';
 
           if (!rooms.has(currentRoom)) {
@@ -80,8 +115,8 @@ async function startServer() {
           }
           list.push({ ws, role: currentRole });
 
-          const controllersCount = list.filter(c => c.role === 'controller').length;
-          const hasHost = list.some(c => c.role === 'host');
+          const controllersCount = getRoomControllersCount(currentRoom);
+          const hasHost = getRoomHasHost(currentRoom);
 
           // 1. Notify all participants of room status
           broadcastToRoom(currentRoom, {
@@ -107,6 +142,20 @@ async function startServer() {
           }
         } else if (data.type === 'command') {
           if (currentRoom) {
+            const cmdObj = {
+              id: commandCounter++,
+              action: data.action,
+              payload: data.payload !== undefined ? data.payload : data,
+              timestamp: Date.now()
+            };
+
+            if (!roomCommands.has(currentRoom)) {
+              roomCommands.set(currentRoom, []);
+            }
+            const q = roomCommands.get(currentRoom)!;
+            q.push(cmdObj);
+            if (q.length > 30) q.shift();
+
             forwardToRole(currentRoom, 'host', data);
           }
         }
@@ -118,20 +167,104 @@ async function startServer() {
     ws.on('close', () => {
       if (currentRoom && rooms.has(currentRoom)) {
         const list = rooms.get(currentRoom)!.filter(c => c.ws !== ws);
-        if (list.length === 0) {
-          rooms.delete(currentRoom);
-          roomStates.delete(currentRoom);
-        } else {
-          rooms.set(currentRoom, list);
-          const controllersCount = list.filter(c => c.role === 'controller').length;
-          broadcastToRoom(currentRoom, {
-            type: 'room_status',
-            controllersCount,
-            hasHost: list.some(c => c.role === 'host'),
-            room: currentRoom
-          });
-        }
+        rooms.set(currentRoom, list);
+
+        const controllersCount = getRoomControllersCount(currentRoom);
+        const hasHost = getRoomHasHost(currentRoom);
+
+        broadcastToRoom(currentRoom, {
+          type: 'room_status',
+          controllersCount,
+          hasHost,
+          room: currentRoom
+        });
+        // We purposefully preserve roomStates so reloaded controllers immediately get the script
       }
+    });
+  });
+
+  // REST API: Remote Control Fallback Endpoints
+  app.post('/api/remote/join', (req, res) => {
+    const room = (req.body?.room || 'STUDIO1').trim().toUpperCase();
+    const role = req.body?.role === 'host' ? 'host' : 'controller';
+
+    const state = roomStates.get(room) || null;
+    const controllersCount = getRoomControllersCount(room);
+    const hasHost = getRoomHasHost(room);
+
+    res.json({
+      ok: true,
+      room,
+      role,
+      hasHost,
+      controllersCount,
+      state
+    });
+  });
+
+  app.post('/api/remote/sync', (req, res) => {
+    const room = (req.body?.room || 'STUDIO1').trim().toUpperCase();
+    const state = req.body?.state;
+    if (room && state) {
+      roomStates.set(room, state);
+      forwardToRole(room, 'controller', state);
+    }
+    res.json({ ok: true });
+  });
+
+  app.post('/api/remote/command', (req, res) => {
+    const room = (req.body?.room || 'STUDIO1').trim().toUpperCase();
+    const action = req.body?.action;
+    const payload = req.body?.payload;
+
+    if (!room || !action) {
+      return res.status(400).json({ error: 'room and action are required' });
+    }
+
+    const cmdObj = {
+      id: commandCounter++,
+      action,
+      payload,
+      timestamp: Date.now()
+    };
+
+    if (!roomCommands.has(room)) {
+      roomCommands.set(room, []);
+    }
+    const q = roomCommands.get(room)!;
+    q.push(cmdObj);
+    if (q.length > 30) q.shift();
+
+    forwardToRole(room, 'host', {
+      type: 'command',
+      action,
+      payload,
+      ...payload
+    });
+
+    res.json({ ok: true, id: cmdObj.id });
+  });
+
+  app.get('/api/remote/poll', (req, res) => {
+    const room = String(req.query.room || 'STUDIO1').trim().toUpperCase();
+    const role = req.query.role === 'host' ? 'host' : 'controller';
+    const since = Number(req.query.since || 0);
+
+    const state = roomStates.get(room) || null;
+    const controllersCount = getRoomControllersCount(room);
+    const hasHost = getRoomHasHost(room);
+
+    let commands: any[] = [];
+    if (role === 'host' && roomCommands.has(room)) {
+      commands = roomCommands.get(room)!.filter(c => c.id > since);
+    }
+
+    res.json({
+      room,
+      hasHost,
+      controllersCount,
+      state,
+      commands
     });
   });
 
@@ -182,8 +315,12 @@ Retorne apenas o texto do roteiro pronto.`;
 
   // Vite middleware for development or static serving for production
   if (process.env.NODE_ENV !== 'production') {
+    const isHmrDisabled = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: isHmrDisabled ? false : { server },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Pause, RotateCcw, FastForward, Rewind, Plus, Minus, ArrowLeft, Smartphone, WifiOff, QrCode, Download } from 'lucide-react';
+import { Play, Pause, RotateCcw, FastForward, Rewind, Plus, Minus, ArrowLeft, Smartphone, WifiOff, QrCode, Download, RefreshCw } from 'lucide-react';
 import RemotePairModal from './RemotePairModal';
 import { useOrientation } from '../hooks/useOrientation';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import InstallGuideModal from './InstallGuideModal';
+import { RemoteClient, ConnectionMode } from '../services/remoteService';
 
 interface RemoteState {
   isPlaying: boolean;
@@ -24,6 +25,8 @@ interface Props {
 export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props) {
   const [roomCode, setRoomCode] = useState(initialRoomCode.toUpperCase() || 'STUDIO1');
   const [isConnected, setIsConnected] = useState(false);
+  const [hasHost, setHasHost] = useState(false);
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('disconnected');
   const [showQrModal, setShowQrModal] = useState(false);
   const [showInstallGuide, setShowInstallGuide] = useState(false);
   const pwaState = usePWAInstall();
@@ -37,8 +40,7 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
     cuePoints: []
   });
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const remoteClientRef = useRef<RemoteClient | null>(null);
 
   // Real-time automatic orientation detection
   const orientationInfo = useOrientation();
@@ -67,97 +69,69 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
     }
   };
 
-  const connect = () => {
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws-remote`;
-    const ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => {
-      setIsConnected(true);
-      ws.send(JSON.stringify({
-        type: 'join',
-        room: roomCode.trim().toUpperCase(),
-        role: 'controller'
-      }));
-      // Request immediate state sync from teleprompter host
-      ws.send(JSON.stringify({
-        type: 'command',
-        action: 'request_sync'
-      }));
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'sync_state') {
-          setState(prev => ({
-            ...prev,
-            isPlaying: data.isPlaying !== undefined ? data.isPlaying : prev.isPlaying,
-            speed: data.speed !== undefined ? data.speed : prev.speed,
-            fontSize: data.fontSize !== undefined ? data.fontSize : prev.fontSize,
-            progressPercent: data.progressPercent !== undefined ? data.progressPercent : prev.progressPercent,
-            scriptTitle: data.scriptTitle || prev.scriptTitle,
-            wordCount: data.wordCount || prev.wordCount,
-            cuePoints: data.cuePoints || prev.cuePoints,
-            activeCue: data.activeCue
-          }));
-        } else if (data.type === 'room_status') {
-          if (!data.hasHost) {
-            setState(prev => ({ ...prev, scriptTitle: 'Aguardando o Teleprompter conectar nesta sala...' }));
-          } else {
-            // Host is present, request sync if title is still placeholder
-            sendCommand('request_sync');
-          }
-        }
-      } catch (err) {
-        console.error('WS remote parse err:', err);
-      }
-    };
-
-    ws.onclose = () => {
-      setIsConnected(false);
-      reconnectTimeoutRef.current = setTimeout(() => {
-        connect();
-      }, 3000);
-    };
-
-    wsRef.current = ws;
-  };
-
   useEffect(() => {
-    connect();
+    const client = new RemoteClient(roomCode, 'controller', {
+      onState: (data) => {
+        setIsConnected(true);
+        setState(prev => ({
+          ...prev,
+          isPlaying: data.isPlaying !== undefined ? data.isPlaying : prev.isPlaying,
+          speed: data.speed !== undefined ? data.speed : prev.speed,
+          fontSize: data.fontSize !== undefined ? data.fontSize : prev.fontSize,
+          progressPercent: data.progressPercent !== undefined ? data.progressPercent : prev.progressPercent,
+          scriptTitle: data.scriptTitle || prev.scriptTitle,
+          wordCount: data.wordCount || prev.wordCount,
+          cuePoints: data.cuePoints || prev.cuePoints,
+          activeCue: data.activeCue
+        }));
+      },
+      onStatus: (status) => {
+        setIsConnected(status.isConnected);
+        setHasHost(status.hasHost);
+        setConnectionMode(status.mode);
+        if (!status.hasHost) {
+          setState(prev => ({ ...prev, scriptTitle: 'Aguardando o Teleprompter conectar nesta sala...' }));
+        }
+      }
+    });
+
+    remoteClientRef.current = client;
+
+    // Request immediate state sync
+    client.sendCommand('request_sync');
+
     return () => {
-      if (wsRef.current) wsRef.current.close();
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      client.destroy();
+      remoteClientRef.current = null;
     };
   }, [roomCode]);
 
   const sendCommand = (action: string, payload: any = {}) => {
     vibrate();
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'command',
-        action,
-        ...payload
-      }));
+    if (remoteClientRef.current) {
+      remoteClientRef.current.sendCommand(action, payload);
+    }
+  };
+
+  const handleReconnect = () => {
+    vibrate(50);
+    if (remoteClientRef.current) {
+      remoteClientRef.current.changeRoom(roomCode);
+      remoteClientRef.current.sendCommand('request_sync');
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#07070A] text-white flex flex-col justify-between p-3 sm:p-6 select-none font-sans">
+    <div className="min-h-[100dvh] h-[100dvh] bg-[#07070A] text-white flex flex-col justify-between p-3 sm:p-6 pt-safe pb-safe select-none font-sans overflow-y-auto">
       {/* Toast Notification when rotating device */}
       {orientationNotice && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-amber-400 text-black text-xs font-bold rounded-full shadow-2xl pointer-events-none animate-in fade-in slide-in-from-top-2">
+        <div className="fixed top-3 sm:top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-amber-400 text-black text-xs font-bold rounded-full shadow-2xl pointer-events-none animate-in fade-in slide-in-from-top-2 pt-safe">
           {orientationNotice}
         </div>
       )}
 
       {/* Top Header */}
-      <div className="flex items-center justify-between border-b border-gray-800/80 pb-2.5">
+      <div className="flex items-center justify-between border-b border-gray-800/80 pb-2 shrink-0">
         <div className="flex items-center gap-2 sm:gap-3">
           {onExit && (
             <button 
@@ -213,16 +187,33 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
             <span className="hidden sm:inline">QR Code</span>
           </button>
 
-          {isConnected ? (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-950/60 border border-emerald-700/60 rounded-full text-[11px] text-emerald-400 font-medium">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              Sincronizado
+          <button
+            onClick={handleReconnect}
+            className="p-2 bg-gray-900 hover:bg-gray-800 border border-gray-800 rounded-lg text-gray-400 hover:text-white transition-colors"
+            title="Atualizar / Reconectar controle"
+          >
+            <RefreshCw size={13} />
+          </button>
+
+          {isConnected && hasHost ? (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-950/70 border border-emerald-600/60 rounded-full text-[11px] text-emerald-300 font-medium shadow-sm" title={`Conectado via ${connectionMode}`}>
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span>Conectado</span>
+              <span className="text-[9px] text-emerald-400/80 uppercase font-mono hidden sm:inline">({connectionMode})</span>
+            </div>
+          ) : isConnected && !hasHost ? (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-950/70 border border-amber-600/60 rounded-full text-[11px] text-amber-300 font-medium" title={`Modo: ${connectionMode}`}>
+              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+              <span>Aguardando Prompter</span>
             </div>
           ) : (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-red-950/60 border border-red-700/60 rounded-full text-[11px] text-red-400 font-medium">
+            <button
+              onClick={handleReconnect}
+              className="flex items-center gap-1.5 px-2.5 py-1 bg-red-950/70 border border-red-700/60 rounded-full text-[11px] text-red-300 font-medium hover:bg-red-900/60 transition-colors"
+            >
               <WifiOff size={12} />
-              Desconectado
-            </div>
+              Reconectar
+            </button>
           )}
         </div>
       </div>

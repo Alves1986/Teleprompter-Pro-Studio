@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, AlertCircle } from 'lucide-react';
+import { Mic, MicOff, AlertCircle, RefreshCw } from 'lucide-react';
 import { stripMarkers } from '../utils';
 
 interface Props {
@@ -24,6 +24,8 @@ export default function VoiceFollowTracker({
   const currentMatchLineRef = useRef<number>(0);
   const isEnabledRef = useRef<boolean>(isEnabled);
   isEnabledRef.current = isEnabled;
+  const isListeningRef = useRef<boolean>(false);
+  isListeningRef.current = isListening;
   const isStoppingRef = useRef<boolean>(false);
   const restartTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -59,8 +61,10 @@ export default function VoiceFollowTracker({
 
       try {
         if (recognitionRef.current) {
+          recognitionRef.current.onstart = null;
           recognitionRef.current.onend = null;
           recognitionRef.current.onerror = null;
+          recognitionRef.current.onresult = null;
           try { recognitionRef.current.abort(); } catch {}
           recognitionRef.current = null;
         }
@@ -73,6 +77,7 @@ export default function VoiceFollowTracker({
 
         recognition.onstart = () => {
           setIsListening(true);
+          isListeningRef.current = true;
           setErrorMsg(null);
         };
 
@@ -82,37 +87,26 @@ export default function VoiceFollowTracker({
             setErrorMsg('Microfone não autorizado no navegador.');
             onToggleVoice(false);
           } else if (event.error === 'audio-capture') {
-            setErrorMsg('Microfone ocupado. Reconectando...');
+            setErrorMsg('Microfone ocupado pela câmera. Reconectando...');
+            scheduleRestart(800);
+          } else if (event.error === 'aborted') {
+            // Often occurs when camera stream is requested by browser
+            scheduleRestart(400);
           } else if (event.error === 'network') {
             setErrorMsg('Reconectando serviço de voz...');
+            scheduleRestart(1000);
           }
         };
 
         recognition.onend = () => {
+          setIsListening(false);
+          isListeningRef.current = false;
           if (isStoppingRef.current || !isEnabledRef.current) {
-            setIsListening(false);
             return;
           }
-
-          // Auto-recover and restart smoothly with slight debounce
-          if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
-          restartTimerRef.current = setTimeout(() => {
-            if (isEnabledRef.current && !isStoppingRef.current) {
-              try {
-                recognition.start();
-                setIsListening(true);
-              } catch (startErr: any) {
-                // If recognition instance is dead or invalid state, re-init
-                if (startErr.name !== 'InvalidStateError') {
-                  restartTimerRef.current = setTimeout(() => {
-                    if (isEnabledRef.current && !isStoppingRef.current) {
-                      initRecognition();
-                    }
-                  }, 800);
-                }
-              }
-            }
-          }, 150);
+          // Instead of calling .start() on a dead recognition instance,
+          // instantiate a fresh one safely
+          scheduleRestart(250);
         };
 
         recognition.onresult = (event: any) => {
@@ -168,19 +162,44 @@ export default function VoiceFollowTracker({
         recognition.start();
         recognitionRef.current = recognition;
       } catch (e) {
-        console.warn('Recognition start err:', e);
-        if (isEnabledRef.current && !isStoppingRef.current) {
-          restartTimerRef.current = setTimeout(() => {
-            initRecognition();
-          }, 1000);
-        }
+        console.warn('Recognition init err:', e);
+        scheduleRestart(1000);
       }
     };
+
+    const scheduleRestart = (delayMs: number) => {
+      if (isStoppingRef.current || !isEnabledRef.current) return;
+      if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = setTimeout(() => {
+        if (isEnabledRef.current && !isStoppingRef.current) {
+          initRecognition();
+        }
+      }, delayMs);
+    };
+
+    // Watchdog: ensures recognition stays active even if interrupted by camera acquisition
+    const watchdog = setInterval(() => {
+      if (isEnabledRef.current && !isStoppingRef.current && !isListeningRef.current) {
+        initRecognition();
+      }
+    }, 2500);
+
+    // Camera toggle listener: restart speech recognition after camera permissions settle
+    const handleCameraToggle = () => {
+      if (isEnabledRef.current && !isStoppingRef.current) {
+        setTimeout(() => {
+          initRecognition();
+        }, 500);
+      }
+    };
+    window.addEventListener('camera_stream_toggled', handleCameraToggle);
 
     initRecognition();
 
     return () => {
       isStoppingRef.current = true;
+      clearInterval(watchdog);
+      window.removeEventListener('camera_stream_toggled', handleCameraToggle);
       if (restartTimerRef.current) {
         clearTimeout(restartTimerRef.current);
         restartTimerRef.current = null;
@@ -196,8 +215,10 @@ export default function VoiceFollowTracker({
       restartTimerRef.current = null;
     }
     if (recognitionRef.current) {
+      recognitionRef.current.onstart = null;
       recognitionRef.current.onend = null;
       recognitionRef.current.onerror = null;
+      recognitionRef.current.onresult = null;
       try {
         recognitionRef.current.stop();
       } catch {
@@ -206,6 +227,33 @@ export default function VoiceFollowTracker({
       recognitionRef.current = null;
     }
     setIsListening(false);
+    isListeningRef.current = false;
+  };
+
+  const manualRestart = () => {
+    isStoppingRef.current = false;
+    setErrorMsg(null);
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    try {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch {}
+        recognitionRef.current = null;
+      }
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'pt-BR';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.onstart = () => {
+        setIsListening(true);
+        isListeningRef.current = true;
+      };
+      recognition.start();
+      recognitionRef.current = recognition;
+    } catch (err) {
+      console.warn('Manual restart err:', err);
+    }
   };
 
   if (!isEnabled) return null;
@@ -219,14 +267,17 @@ export default function VoiceFollowTracker({
             <span className="relative inline-flex rounded-full h-3 w-3 bg-indigo-500"></span>
           </span>
         ) : (
-          <span className="h-3 w-3 rounded-full bg-gray-500"></span>
+          <span className="h-3 w-3 rounded-full bg-amber-500"></span>
         )}
-        <Mic size={14} className={isListening ? 'text-indigo-400' : 'text-gray-400'} />
+        <Mic size={14} className={isListening ? 'text-indigo-400' : 'text-amber-400'} />
       </div>
 
       <div className="flex-1 min-w-0">
-        <div className="text-[10px] uppercase font-bold tracking-wider text-indigo-400">
-          Smart Follow (Voz)
+        <div className="text-[10px] uppercase font-bold tracking-wider text-indigo-400 flex items-center gap-1.5">
+          <span>Smart Follow (Voz)</span>
+          {!isListening && (
+            <span className="text-[9px] text-amber-400 font-normal">Reconectando</span>
+          )}
         </div>
         {errorMsg ? (
           <p className="text-[11px] text-amber-400 flex items-center gap-1">
@@ -234,10 +285,20 @@ export default function VoiceFollowTracker({
           </p>
         ) : (
           <p className="text-[11px] text-gray-300 truncate">
-            {lastTranscript || (isListening ? 'Aguardando sua fala...' : 'Iniciando microfone...')}
+            {lastTranscript || (isListening ? 'Aguardando sua fala...' : 'Sincronizando com a câmera...')}
           </p>
         )}
       </div>
+
+      {!isListening && (
+        <button
+          onClick={manualRestart}
+          className="p-1 hover:bg-gray-800 text-amber-400 rounded transition-colors"
+          title="Reconectar microfone"
+        >
+          <RefreshCw size={12} />
+        </button>
+      )}
 
       <button
         onClick={() => onToggleVoice(false)}

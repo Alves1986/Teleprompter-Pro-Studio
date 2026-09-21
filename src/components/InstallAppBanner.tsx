@@ -65,7 +65,7 @@ export default function InstallAppBanner({ pwaState, className = '', forceShow =
   if (isDismissed && !forceShow) {
     return (
       <>
-        <div className="fixed bottom-3 right-3 z-40 animate-fadeIn">
+        <div className="fixed bottom-3 right-3 pb-safe z-40 animate-fadeIn">
           <button
             onClick={handleReopen}
             className="flex items-center gap-1.5 bg-[#1E2030]/95 hover:bg-[#25283d] text-amber-400 border border-amber-500/40 px-3 py-1.5 rounded-full text-xs font-semibold shadow-xl backdrop-blur-md transition hover:scale-105"

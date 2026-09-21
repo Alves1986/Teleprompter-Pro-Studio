@@ -176,51 +176,51 @@ export default function ControlsHud({
   };
 
   return (
-    <div className={`fixed bottom-0 left-0 right-0 p-4 transition-transform duration-300 z-50 ${isOpen ? 'translate-y-0' : 'translate-y-full hover:translate-y-[90%]'} flex justify-center`}>
-      <div className="absolute -top-10 left-1/2 -translate-x-1/2">
-        <button onClick={() => setIsOpen(!isOpen)} className="bg-[#1E2030]/90 backdrop-blur border border-gray-800 px-6 py-2 rounded-t-xl shadow-lg flex items-center gap-2 text-white hover:text-amber-500 transition-colors">
-          <Settings size={18} /> {isOpen ? 'Ocultar Controles' : 'Mostrar Controles HUD'}
+    <div className={`fixed bottom-0 left-0 right-0 p-2 sm:p-4 pb-safe transition-transform duration-300 z-50 ${isOpen ? 'translate-y-0' : 'translate-y-full hover:translate-y-[90%]'} flex justify-center`}>
+      <div className="absolute -top-9 sm:-top-10 left-1/2 -translate-x-1/2">
+        <button onClick={() => setIsOpen(!isOpen)} className="bg-[#1E2030]/95 backdrop-blur border border-gray-800 px-4 sm:px-6 py-1.5 sm:py-2 rounded-t-xl shadow-lg flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-white hover:text-amber-500 transition-colors">
+          <Settings size={15} /> {isOpen ? 'Ocultar Controles' : 'Controles HUD'}
         </button>
       </div>
       
-      <div className="bg-[#0A0A0F]/95 backdrop-blur-md border border-gray-800 rounded-t-2xl sm:rounded-2xl p-4 sm:p-6 shadow-2xl flex flex-col gap-4 sm:gap-6 max-w-4xl w-full max-h-[85vh] overflow-y-auto">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-gray-800 pb-4 gap-4">
-           <h3 className="text-xl font-display font-bold text-white flex items-center gap-2">
+      <div className="bg-[#0A0A0F]/95 backdrop-blur-md border border-gray-800 rounded-t-2xl sm:rounded-2xl p-3.5 sm:p-6 shadow-2xl flex flex-col gap-3 sm:gap-6 max-w-4xl w-full max-h-[80vh] overflow-y-auto pb-safe">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-gray-800 pb-3 sm:pb-4 gap-2.5 sm:gap-4">
+           <h3 className="text-lg sm:text-xl font-display font-bold text-white flex items-center gap-2">
              Controles de Reprodução <span className="text-[10px] bg-amber-500 text-black px-2 py-0.5 rounded tracking-widest hidden sm:inline-block">LIVE</span>
            </h3>
-           <div className="flex gap-2 w-full sm:w-auto shrink-0 justify-end items-center flex-wrap">
-             <button onClick={onTogglePlay} className="px-3 py-2 flex items-center gap-1.5 bg-amber-600 hover:bg-amber-500 rounded-lg text-black font-bold text-xs" title="Reproduzir/Pausar">
+           <div className="flex gap-1.5 sm:gap-2 w-full sm:w-auto shrink-0 justify-end items-center flex-wrap">
+             <button onClick={onTogglePlay} className="px-3 py-1.5 sm:py-2 flex items-center gap-1.5 bg-amber-600 hover:bg-amber-500 rounded-lg text-black font-bold text-xs" title="Reproduzir/Pausar">
                {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}
                {isPlaying ? 'Pausar' : 'Iniciar'}
              </button>
-             <button onClick={onReset} className="p-2 flex justify-center bg-[#1E2030] hover:bg-gray-700 rounded-lg text-gray-300" title="Reiniciar do Início">
-               <RotateCcw size={16} />
+             <button onClick={onReset} className="p-1.5 sm:p-2 flex justify-center bg-[#1E2030] hover:bg-gray-700 rounded-lg text-gray-300" title="Reiniciar do Início">
+               <RotateCcw size={15} />
              </button>
              <button 
                 onClick={cycleOrientationMode} 
-                className={`p-2 flex-1 sm:flex-none justify-center flex items-center gap-1.5 rounded-lg text-xs transition-colors ${
+                className={`p-1.5 sm:p-2 flex-1 sm:flex-none justify-center flex items-center gap-1.5 rounded-lg text-xs transition-colors ${
                   config.orientationMode && config.orientationMode !== 'auto'
                     ? 'bg-amber-950/80 border border-amber-500/80 text-amber-300'
                     : 'bg-[#1E2030] hover:bg-gray-700 text-gray-300'
                 }`} 
-                title={`Orientação: ${config.orientationMode === 'portrait' ? 'Fixo Vertical' : config.orientationMode === 'landscape' ? 'Fixo Horizontal' : 'Automático'} (Detectado: ${orientationInfo.isLandscape ? 'Horizontal' : 'Vertical'}). Clique para alternar.`}
+                title={`Orientação: ${config.orientationMode === 'portrait' ? 'Fixo Vertical' : config.orientationMode === 'landscape' ? 'Fixo Horizontal' : 'Automático'}`}
               >
-                <Smartphone size={16} className={`transition-transform duration-300 ${orientationInfo.isLandscape ? 'rotate-90 text-amber-400' : 'text-amber-400'}`} />
+                <Smartphone size={15} className={`transition-transform duration-300 ${orientationInfo.isLandscape ? 'rotate-90 text-amber-400' : 'text-amber-400'}`} />
                 <span className="hidden sm:inline">
                   {config.orientationMode === 'portrait'
-                    ? 'Fixo: Vertical'
+                    ? 'Vertical'
                     : config.orientationMode === 'landscape'
-                    ? 'Fixo: Horizontal'
-                    : `Auto: ${orientationInfo.isLandscape ? 'Horizontal' : 'Vertical'}`}
+                    ? 'Horizontal'
+                    : 'Auto'}
                 </span>
               </button>
-             <button onClick={handlePiP} className="p-2 flex-1 sm:flex-none justify-center flex bg-[#1E2030] hover:bg-gray-700 rounded-lg text-gray-300" title="Picture in Picture" ><MonitorOff size={18}/></button>
-             <button onClick={toggleFullscreen} className="p-2 flex-1 sm:flex-none justify-center flex bg-[#1E2030] hover:bg-gray-700 rounded-lg text-gray-300" title="Fullscreen" >{isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}</button>
-             <button onClick={onClose} className="p-2 flex-1 sm:flex-none justify-center flex bg-red-900/50 hover:bg-red-500 rounded-lg text-red-200" title="Fechar Prompter" ><X size={18} /></button>
+             <button onClick={handlePiP} className="p-1.5 sm:p-2 flex-1 sm:flex-none justify-center flex bg-[#1E2030] hover:bg-gray-700 rounded-lg text-gray-300" title="Picture in Picture" ><MonitorOff size={16}/></button>
+             <button onClick={toggleFullscreen} className="p-1.5 sm:p-2 flex-1 sm:flex-none justify-center flex bg-[#1E2030] hover:bg-gray-700 rounded-lg text-gray-300" title="Tela Cheia" >{isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}</button>
+             <button onClick={onClose} className="p-1.5 sm:p-2 flex-1 sm:flex-none justify-center flex bg-red-900/50 hover:bg-red-500 rounded-lg text-red-200" title="Fechar Prompter" ><X size={16} /></button>
            </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 sm:gap-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-6">
           <ControlStepper 
             label="Velocidade" 
             value={config.speed} 

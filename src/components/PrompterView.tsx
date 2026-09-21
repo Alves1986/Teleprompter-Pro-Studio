@@ -12,6 +12,7 @@ import { parseScriptBlocks, formatTime } from '../utils';
 import { useOrientation } from '../hooks/useOrientation';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import InstallGuideModal from './InstallGuideModal';
+import { RemoteClient } from '../services/remoteService';
 
 interface Props {
   script: SavedScript;
@@ -89,7 +90,7 @@ export default function PrompterView({
     sessionStorage.setItem('tp_room_code', newCode);
   };
   const [controllersCount, setControllersCount] = useState(0);
-  const wsRef = useRef<WebSocket | null>(null);
+  const remoteClientRef = useRef<RemoteClient | null>(null);
 
   // Real-time automatic screen orientation detection (vertical vs horizontal)
   const orientationInfo = useOrientation();
@@ -140,16 +141,15 @@ export default function PrompterView({
 
   // Broadcast state to remote controllers
   const syncStateToRemote = useCallback((override?: Partial<{ isPlaying: boolean; speed: number; fontSize: number; progressPercent: number }>) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'sync_state',
+    if (remoteClientRef.current) {
+      remoteClientRef.current.syncState({
         isPlaying: override?.isPlaying !== undefined ? override.isPlaying : isPlayingRef.current,
         speed: override?.speed !== undefined ? override.speed : configRef.current.speed,
         fontSize: override?.fontSize !== undefined ? override.fontSize : configRef.current.fontSize,
         progressPercent: override?.progressPercent !== undefined ? override.progressPercent : progressRef.current,
         scriptTitle: script.title,
         estimatedRemaining: remainingRef.current
-      }));
+      });
     }
   }, [script.title]);
 
@@ -202,6 +202,15 @@ export default function PrompterView({
         syncStateToRemote({ speed: nextSpeed });
         break;
       }
+      case 'set_speed': {
+        const spd = typeof payload?.speed === 'number' ? payload.speed : Number(payload);
+        if (!isNaN(spd)) {
+          const valid = Math.min(10, Math.max(0.5, +spd.toFixed(1)));
+          onUpdateConfigRef.current({ speed: valid });
+          syncStateToRemote({ speed: valid });
+        }
+        break;
+      }
       case 'font_up': {
         const nextFont = Math.min(150, configRef.current.fontSize + 4);
         onUpdateConfigRef.current({ fontSize: nextFont });
@@ -212,6 +221,15 @@ export default function PrompterView({
         const nextFont = Math.max(20, configRef.current.fontSize - 4);
         onUpdateConfigRef.current({ fontSize: nextFont });
         syncStateToRemote({ fontSize: nextFont });
+        break;
+      }
+      case 'set_font': {
+        const fnt = typeof payload?.fontSize === 'number' ? payload.fontSize : Number(payload);
+        if (!isNaN(fnt)) {
+          const valid = Math.min(150, Math.max(20, Math.round(fnt)));
+          onUpdateConfigRef.current({ fontSize: valid });
+          syncStateToRemote({ fontSize: valid });
+        }
         break;
       }
       case 'restart':
@@ -239,51 +257,43 @@ export default function PrompterView({
           jumpToLine(payload.lineIndex);
         }
         break;
+      case 'request_sync':
+        syncStateToRemote();
+        break;
     }
   }, [triggerTogglePlay, syncStateToRemote]);
 
   const handleRemoteCommandRef = useRef(handleRemoteCommand);
   handleRemoteCommandRef.current = handleRemoteCommand;
 
-  // Connect to Remote Control WebSocket Server
+  // Initialize Robust Multi-Transport Remote Client
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws-remote`;
-    const ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        type: 'join',
-        room: roomCode,
-        role: 'host'
-      }));
-      // Push state immediately upon joining
-      syncStateToRemote();
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'room_status') {
-          setControllersCount(msg.controllersCount || 0);
-        } else if (msg.type === 'request_sync') {
-          syncStateToRemote();
-        } else if (msg.type === 'command') {
-          handleRemoteCommandRef.current(msg.action, msg.payload);
-        }
-      } catch (err) {
-        console.error('Remote WS msg error:', err);
+    const client = new RemoteClient(roomCode, 'host', {
+      onCommand: (action, payload) => {
+        handleRemoteCommandRef.current(action, payload);
+      },
+      onStatus: (status) => {
+        setControllersCount(status.controllersCount);
       }
-    };
+    });
 
-    wsRef.current = ws;
+    remoteClientRef.current = client;
+
+    // Push state immediately upon connection
+    client.syncState({
+      isPlaying: isPlayingRef.current,
+      speed: configRef.current.speed,
+      fontSize: configRef.current.fontSize,
+      progressPercent: progressRef.current,
+      scriptTitle: script.title,
+      estimatedRemaining: remainingRef.current
+    });
 
     return () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      }
+      client.destroy();
+      remoteClientRef.current = null;
     };
-  }, [roomCode, syncStateToRemote]);
+  }, [roomCode, script.title]);
 
   useEffect(() => {
     syncStateToRemote();
@@ -592,9 +602,9 @@ export default function PrompterView({
 
       {/* Live Recording Pulsing Studio Badge */}
       {config.theme === AppTheme.STUDIO && isPlaying && (
-        <div className="absolute top-8 right-8 z-30 flex items-center gap-2 bg-red-600/10 border border-red-500/30 px-3 py-1 rounded-full animate-pulse backdrop-blur">
-          <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-          <span className="text-red-500 font-bold tracking-widest text-sm">NO AR</span>
+        <div className="absolute top-4 right-4 sm:top-8 sm:right-8 z-30 flex items-center gap-1.5 sm:gap-2 bg-red-600/10 border border-red-500/30 px-2.5 sm:px-3 py-0.5 sm:py-1 rounded-full animate-pulse backdrop-blur pt-safe">
+          <div className="w-2.5 h-2.5 sm:w-3 sm:h-3 bg-red-500 rounded-full"></div>
+          <span className="text-red-500 font-bold tracking-widest text-xs sm:text-sm">NO AR</span>
         </div>
       )}
 
@@ -607,14 +617,14 @@ export default function PrompterView({
 
       {/* Time Remaining & Target Pacing Bar */}
       {config.showTimeRemaining && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2">
-          <div className="bg-black/70 backdrop-blur px-3 py-1 rounded-md text-amber-500 font-mono text-sm shadow-xl border border-gray-800 flex items-center gap-1.5">
-            <Clock size={13} />
+        <div className="absolute top-3 sm:top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 sm:gap-2 max-w-[95%] pt-safe">
+          <div className="bg-black/70 backdrop-blur px-2.5 sm:px-3 py-1 rounded-md text-amber-500 font-mono text-xs sm:text-sm shadow-xl border border-gray-800 flex items-center gap-1 sm:gap-1.5 shrink-0">
+            <Clock size={12} />
             <span>-{formatRemainingTime()}</span>
           </div>
 
           {targetSeconds > 0 && (
-            <div className={`px-2.5 py-1 rounded-md text-xs font-bold font-mono border backdrop-blur ${
+            <div className={`px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md text-[10px] sm:text-xs font-bold font-mono border backdrop-blur truncate ${
               isPacingOvertime
                 ? 'bg-red-950/80 border-red-500 text-red-300 animate-pulse'
                 : 'bg-emerald-950/80 border-emerald-500 text-emerald-300'
@@ -685,42 +695,45 @@ export default function PrompterView({
       />
 
       {/* Floating Action Buttons: Remote Quick-Pair & Escaleta & Play */}
-      <div className="absolute bottom-8 right-8 z-40 flex items-center gap-3">
+      <div className="absolute bottom-5 sm:bottom-8 right-3 sm:right-8 z-40 flex items-center gap-2 sm:gap-3 pb-safe">
         {/* Remote Pairing Quick Icon */}
         <button
           onClick={() => setIsRemoteModalOpen(true)}
-          className={`flex items-center gap-2 px-3.5 py-3 rounded-full border shadow-2xl transition-all hover:scale-105 active:scale-95 ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-3.5 py-2.5 sm:py-3 rounded-full border shadow-2xl transition-all hover:scale-105 active:scale-95 ${
             controllersCount > 0
               ? 'bg-emerald-950/90 border-emerald-500 text-emerald-300'
               : 'bg-[#1E2030]/95 border-gray-700 text-gray-300 hover:text-amber-400'
           }`}
           title={controllersCount > 0 ? `${controllersCount} celular(es) conectado(s)` : 'Conectar controle remoto via QR Code'}
         >
-          <Smartphone size={20} />
-          <span className="text-xs font-semibold pr-1">
+          <Smartphone size={18} />
+          <span className="text-xs font-semibold pr-0.5 hidden sm:inline">
             {controllersCount > 0 ? `${controllersCount} conectado` : 'QR Code Celular'}
+          </span>
+          <span className="text-xs font-semibold sm:hidden">
+            {controllersCount > 0 ? `${controllersCount}` : 'QR'}
           </span>
         </button>
 
         {/* Escaleta Quick Drawer Button */}
         <button
           onClick={() => setIsEscaletaOpen(true)}
-          className="p-3.5 bg-[#1E2030]/90 hover:bg-gray-700 border border-gray-700 rounded-full text-gray-300 hover:text-amber-400 shadow-2xl transition-all hover:scale-105 active:scale-95"
+          className="p-2.5 sm:p-3.5 bg-[#1E2030]/90 hover:bg-gray-700 border border-gray-700 rounded-full text-gray-300 hover:text-amber-400 shadow-2xl transition-all hover:scale-105 active:scale-95"
           title="Abrir escaleta de blocos"
         >
-          <ListOrdered size={20} />
+          <ListOrdered size={18} />
         </button>
 
         {/* Main Floating Play/Pause Button */}
         <button 
           onClick={triggerTogglePlay}
-          className={`w-16 h-16 rounded-full flex items-center justify-center shadow-2xl transition-all hover:scale-105 active:scale-95 ${
+          className={`w-12 h-12 sm:w-16 sm:h-16 rounded-full flex items-center justify-center shadow-2xl transition-all hover:scale-105 active:scale-95 ${
             isPlaying 
               ? 'bg-[#1E2030] text-amber-500 border border-amber-500/30' 
               : 'bg-amber-500 text-[#0A0A0F] shadow-amber-500/20'
           }`}
         >
-          {isPlaying ? <Pause size={32} fill="currentColor" /> : <Play size={32} fill="currentColor" className="ml-1" />}
+          {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-0.5" />}
         </button>
       </div>
 

@@ -60,6 +60,9 @@ export default function CameraRecorder({
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('camera_stream_toggled', { detail: { active: true } }));
+      }
     } catch (err: any) {
       console.error('Camera access error:', err);
       setCameraError('Permissão da câmera não concedida no navegador.');
@@ -81,6 +84,9 @@ export default function CameraRecorder({
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('camera_stream_toggled', { detail: { active: false } }));
     }
   };
 

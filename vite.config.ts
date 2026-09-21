@@ -56,8 +56,7 @@ export default defineConfig({
         ]
       },
       devOptions: {
-        enabled: true,
-        type: 'module'
+        enabled: false
       }
     })
   ],
@@ -69,6 +68,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 3000,
-    allowedHosts: true
+    allowedHosts: true,
+    hmr: process.env.DISABLE_HMR === 'true' ? false : undefined
   }
 });

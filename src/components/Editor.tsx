@@ -156,26 +156,26 @@ export default function Editor({ script, onChange, onDelete }: Props) {
   };
 
   return (
-    <div className="flex flex-col w-full max-w-[95%] lg:max-w-[1600px] mx-auto px-4 py-4 sm:p-6 gap-4 flex-1 h-full overflow-hidden">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+    <div className="flex flex-col w-full max-w-full lg:max-w-[1600px] mx-auto px-3 sm:px-6 py-2.5 sm:py-4 gap-2.5 sm:gap-4 flex-1 h-full overflow-hidden">
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2 sm:gap-4 shrink-0">
         <div className="flex flex-col gap-1 w-full">
           <input 
             type="text" 
             value={script.title}
             onChange={(e) => onChange({ ...script, title: e.target.value, lastModified: Date.now() })}
-            className="bg-transparent border-none text-2xl sm:text-4xl font-display font-bold text-white focus:outline-none focus:ring-0 placeholder-gray-600 truncate w-full"
+            className="bg-transparent border-none text-xl sm:text-3xl font-display font-bold text-white focus:outline-none focus:ring-0 placeholder-gray-600 truncate w-full"
             placeholder="Título do Roteiro"
           />
-          <div className="flex items-center gap-3 text-[10px] sm:text-xs font-mono">
-          <span className="text-gray-500">
-            Última modificação: {new Date(script.lastModified).toLocaleTimeString()}
+          <div className="flex items-center gap-2 sm:gap-3 text-[10px] sm:text-xs font-mono">
+          <span className="text-gray-500 truncate">
+            Modificado: {new Date(script.lastModified).toLocaleTimeString()}
           </span>
           <span className="text-gray-800">•</span>
-          <div className="flex items-center gap-1.5 transition-all duration-500">
+          <div className="flex items-center gap-1.5 transition-all duration-500 shrink-0">
             {saveStatus === 'saving' && (
               <>
                 <Loader2 size={12} className="animate-spin text-amber-500" />
-                <span className="text-amber-500/70">Sincronizando...</span>
+                <span className="text-amber-500/70">Salvando...</span>
               </>
             )}
             {saveStatus === 'saved' && (
@@ -187,7 +187,7 @@ export default function Editor({ script, onChange, onDelete }: Props) {
             {saveStatus === 'error' && (
               <>
                 <AlertCircle size={12} className="text-red-500" />
-                <span className="text-red-500/70">Erro ao sincronizar</span>
+                <span className="text-red-500/70">Erro ao salvar</span>
               </>
             )}
             {saveStatus === 'idle' && script.id !== 'temp' && (
@@ -201,45 +201,49 @@ export default function Editor({ script, onChange, onDelete }: Props) {
       </div>
     </div>
 
-    <div className="bg-[#1E2030] border border-gray-800 rounded-xl p-2 flex flex-col xl:flex-row items-stretch xl:items-center justify-between shadow-md gap-3">
-        <div className="flex items-center gap-2 overflow-x-auto pb-2 xl:pb-0 hide-scrollbar justify-start w-full whitespace-nowrap">
-          <button onClick={() => insertMarker('[PAUSA]')} className="flex items-center gap-1.5 px-3 py-1.5 bg-black/40 hover:bg-amber-500/20 hover:text-amber-500 rounded text-sm text-gray-300 transition-colors shrink-0" title="Inserir pausa visual">
-            <Pause size={14} /> Pausa
-          </button>
-          <button onClick={() => insertMarker('[ÊNFASE: Texto Destaque]')} className="flex items-center gap-1.5 px-3 py-1.5 bg-black/40 hover:bg-amber-500/20 hover:text-amber-500 rounded text-sm text-gray-300 transition-colors shrink-0" title="Texto em destaque">
-            <Quote size={14} /> Ênfase
-          </button>
-          <button onClick={() => insertMarker('[CUE: Câmera 1]')} className="flex items-center gap-1.5 px-3 py-1.5 bg-black/40 hover:bg-blue-500/20 hover:text-blue-400 rounded text-sm text-gray-300 transition-colors shrink-0" title="Instrução lateral de Câmera/Ação">
-            <Flag size={14} /> Cue Point
-          </button>
-          <button onClick={() => insertMarker('[NOTA: Lembrar de sorrir]')} className="flex items-center gap-1.5 px-3 py-1.5 bg-black/40 hover:bg-gray-500/20 hover:text-gray-300 rounded text-sm text-gray-300 transition-colors shrink-0" title="Nota interna (cinza/itálico)">
-            <Info size={14} /> Nota
-          </button>
-        </div>
-        <div className="flex items-center gap-2 overflow-x-auto pb-2 xl:pb-0 hide-scrollbar justify-start xl:justify-end w-full whitespace-nowrap border-t border-gray-800 xl:border-none pt-2 xl:pt-0">
-           <button onClick={() => setShowAiModal(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600 hover:text-white rounded text-sm font-bold transition-colors shrink-0">
-            <Sparkles size={16} /> Assistente IA
-          </button>
-           <button onClick={() => setShowStats(!showStats)} className="flex items-center gap-1.5 px-3 py-1.5 text-gray-400 hover:text-white rounded text-sm transition-colors shrink-0">
-            <BarChart2 size={16} /> Estatísticas
-          </button>
-          <button onClick={handleManualSave} className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 rounded text-sm font-medium transition-colors border border-amber-500/40 shrink-0" title="Salvar alterações agora">
-            <Save size={16} /> Salvar
-          </button>
-          {onDelete && (
-            <button 
-              onClick={() => setShowDeleteConfirm(true)} 
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-950/40 hover:bg-red-900/60 text-red-400 hover:text-red-300 rounded text-sm font-medium transition-colors border border-red-800/50 shrink-0" 
-              title="Excluir este roteiro"
-            >
-              <Trash2 size={15} /> Excluir
-            </button>
-          )}
-          <button onClick={handlePrint} className="flex items-center gap-1.5 px-4 py-1.5 bg-gray-800 hover:bg-gray-700 text-white rounded text-sm font-medium transition-colors border border-gray-700 shrink-0">
-            <Printer size={16} /> Exportar
-          </button>
-        </div>
+    <div className="bg-[#1E2030] border border-gray-800 rounded-xl p-2 flex flex-col gap-2 shadow-md shrink-0">
+      {/* Row 1: Markers */}
+      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar scroll-smooth w-full whitespace-nowrap">
+        <span className="text-[10px] uppercase font-mono text-gray-500 font-bold px-1 hidden sm:inline shrink-0">Marcadores:</span>
+        <button onClick={() => insertMarker('[PAUSA]')} className="flex items-center gap-1 px-2.5 py-1.5 bg-black/40 hover:bg-amber-500/20 hover:text-amber-400 rounded text-xs text-gray-300 transition-colors shrink-0" title="Inserir pausa visual">
+          <Pause size={13} /> Pausa
+        </button>
+        <button onClick={() => insertMarker('[ÊNFASE: Texto Destaque]')} className="flex items-center gap-1 px-2.5 py-1.5 bg-black/40 hover:bg-amber-500/20 hover:text-amber-400 rounded text-xs text-gray-300 transition-colors shrink-0" title="Texto em destaque">
+          <Quote size={13} /> Ênfase
+        </button>
+        <button onClick={() => insertMarker('[CUE: Câmera 1]')} className="flex items-center gap-1 px-2.5 py-1.5 bg-black/40 hover:bg-blue-500/20 hover:text-blue-400 rounded text-xs text-gray-300 transition-colors shrink-0" title="Instrução lateral de Câmera/Ação">
+          <Flag size={13} /> Cue Point
+        </button>
+        <button onClick={() => insertMarker('[NOTA: Lembrar de sorrir]')} className="flex items-center gap-1 px-2.5 py-1.5 bg-black/40 hover:bg-gray-500/20 hover:text-gray-300 rounded text-xs text-gray-300 transition-colors shrink-0" title="Nota interna (cinza/itálico)">
+          <Info size={13} /> Nota
+        </button>
       </div>
+
+      {/* Row 2: Actions (IA, Stats, Salvar, Excluir, Exportar) */}
+      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar scroll-smooth w-full whitespace-nowrap border-t border-gray-800/80 pt-1.5 justify-start xl:justify-end">
+        <button onClick={() => setShowAiModal(true)} className="flex items-center gap-1 px-2.5 py-1.5 bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600 hover:text-white rounded text-xs font-bold transition-colors shrink-0">
+          <Sparkles size={14} /> Assistente IA
+        </button>
+        <button onClick={() => setShowStats(!showStats)} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-800/60 hover:bg-gray-700 text-gray-300 hover:text-white rounded text-xs transition-colors shrink-0">
+          <BarChart2 size={14} /> Estatísticas
+        </button>
+        <button onClick={handleManualSave} className="flex items-center gap-1 px-3 py-1.5 bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 rounded text-xs font-semibold transition-colors border border-amber-500/40 shrink-0" title="Salvar alterações agora">
+          <Save size={14} /> Salvar
+        </button>
+        {onDelete && (
+          <button 
+            onClick={() => setShowDeleteConfirm(true)} 
+            className="flex items-center gap-1 px-2.5 py-1.5 bg-red-950/40 hover:bg-red-900/60 text-red-400 hover:text-red-300 rounded text-xs font-medium transition-colors border border-red-800/50 shrink-0" 
+            title="Excluir este roteiro"
+          >
+            <Trash2 size={14} /> Excluir
+          </button>
+        )}
+        <button onClick={handlePrint} className="flex items-center gap-1 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded text-xs font-medium transition-colors border border-gray-700 shrink-0">
+          <Printer size={14} /> Exportar
+        </button>
+      </div>
+    </div>
 
       {/* Modal Seguro de Confirmação de Exclusão no Editor */}
       {showDeleteConfirm && (
@@ -397,11 +401,11 @@ export default function Editor({ script, onChange, onDelete }: Props) {
       )}
 
       <textarea
-        className="flex-1 w-full bg-[#0F1018] border border-gray-800 rounded-2xl p-6 sm:p-10 text-gray-100 font-mono text-lg sm:text-xl resize-none focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/50 shadow-2xl transition-all"
+        className="flex-1 w-full bg-[#0F1018] border border-gray-800 rounded-xl sm:rounded-2xl p-4 sm:p-8 text-gray-100 font-mono text-base sm:text-xl resize-none focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/50 shadow-2xl transition-all pb-safe"
         value={script.content}
         onChange={(e) => onChange({ ...script, content: e.target.value, lastModified: Date.now() })}
         placeholder="Digite ou cole seu roteiro aqui..."
-        style={{ lineHeight: 1.8 }}
+        style={{ lineHeight: 1.7 }}
       />
     </div>
   );

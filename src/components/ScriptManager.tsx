@@ -193,32 +193,32 @@ export default function ScriptManager({ scripts, setScripts, onSelect, currentId
   };
 
   return (
-    <div className="max-w-[1600px] mx-auto w-full p-4 sm:p-8 flex flex-col h-full">
-      <div className="flex items-center justify-between mb-8">
-        <h2 className="text-2xl font-display font-bold text-white">Biblioteca de Roteiros</h2>
-        <div className="flex flex-wrap gap-2 sm:gap-3">
-          <label className="bg-[#1E2030] hover:bg-gray-800 text-white px-3.5 py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center gap-2 cursor-pointer transition-colors border border-gray-700">
-            <Upload size={16} /> Importar Roteiro
+    <div className="max-w-[1600px] mx-auto w-full p-3 sm:p-8 flex flex-col h-full overflow-y-auto pb-safe">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 sm:mb-8">
+        <h2 className="text-xl sm:text-2xl font-display font-bold text-white">Biblioteca de Roteiros</h2>
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-3">
+          <label className="bg-[#1E2030] hover:bg-gray-800 text-white px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center gap-1.5 cursor-pointer transition-colors border border-gray-700 shrink-0">
+            <Upload size={15} /> <span>Importar</span>
             <input type="file" accept=".txt,.md,.json,.doc,.docx" onChange={handleImport} className="hidden" />
           </label>
           <button 
             onClick={handleExportBackup} 
             disabled={scripts.length === 0}
-            className="bg-[#1E2030] hover:bg-gray-800 text-gray-300 hover:text-white px-3.5 py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center gap-2 transition-colors border border-gray-700 disabled:opacity-40"
+            className="bg-[#1E2030] hover:bg-gray-800 text-gray-300 hover:text-white px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center gap-1.5 transition-colors border border-gray-700 disabled:opacity-40 shrink-0"
             title="Exportar todos os roteiros em JSON"
           >
-            <Download size={16} /> Backup JSON
+            <Download size={15} /> <span>Backup</span>
           </button>
           <button 
             onClick={handleCleanDuplicates}
             disabled={isProcessing || scripts.length <= 1}
-            className="bg-[#1E2030] hover:bg-gray-800 text-amber-400 hover:text-amber-300 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center gap-2 transition-colors border border-amber-500/30 disabled:opacity-40"
+            className="bg-[#1E2030] hover:bg-gray-800 text-amber-400 hover:text-amber-300 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center gap-1.5 transition-colors border border-amber-500/30 disabled:opacity-40 shrink-0"
             title="Remove cópias repetidas idênticas"
           >
-            <Sparkles size={16} /> Limpar Duplicados
+            <Sparkles size={15} /> <span>Limpar</span>
           </button>
-          <button onClick={createNew} disabled={isProcessing} className="bg-amber-600 hover:bg-amber-500 text-black px-4 py-2 rounded-lg text-xs sm:text-sm font-bold flex items-center gap-2 transition-colors disabled:opacity-50">
-            {isProcessing ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} Criar Novo
+          <button onClick={createNew} disabled={isProcessing} className="bg-amber-600 hover:bg-amber-500 text-black px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-colors disabled:opacity-50 shrink-0">
+            {isProcessing ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />} <span>Criar Novo</span>
           </button>
         </div>
       </div>
