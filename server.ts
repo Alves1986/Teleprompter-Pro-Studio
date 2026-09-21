@@ -32,6 +32,7 @@ async function startServer() {
   // Real-Time Remote Control WebSocket Server
   const wss = new WebSocketServer({ server, path: '/ws-remote' });
   const rooms = new Map<string, RoomClient[]>();
+  const roomStates = new Map<string, any>();
 
   const broadcastToRoom = (roomCode: string, payload: any) => {
     const clients = rooms.get(roomCode);
@@ -80,14 +81,28 @@ async function startServer() {
           list.push({ ws, role: currentRole });
 
           const controllersCount = list.filter(c => c.role === 'controller').length;
+          const hasHost = list.some(c => c.role === 'host');
+
+          // 1. Notify all participants of room status
           broadcastToRoom(currentRoom, {
             type: 'room_status',
             controllersCount,
-            hasHost: list.some(c => c.role === 'host'),
+            hasHost,
             room: currentRoom
           });
+
+          // 2. If controller joined: immediately push cached state if available and ask host for fresh sync
+          if (currentRole === 'controller') {
+            if (roomStates.has(currentRoom) && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify(roomStates.get(currentRoom)));
+            }
+            if (hasHost) {
+              forwardToRole(currentRoom, 'host', { type: 'request_sync' });
+            }
+          }
         } else if (data.type === 'sync_state') {
           if (currentRoom) {
+            roomStates.set(currentRoom, data);
             forwardToRole(currentRoom, 'controller', data);
           }
         } else if (data.type === 'command') {
@@ -105,6 +120,7 @@ async function startServer() {
         const list = rooms.get(currentRoom)!.filter(c => c.ws !== ws);
         if (list.length === 0) {
           rooms.delete(currentRoom);
+          roomStates.delete(currentRoom);
         } else {
           rooms.set(currentRoom, list);
           const controllersCount = list.filter(c => c.role === 'controller').length;

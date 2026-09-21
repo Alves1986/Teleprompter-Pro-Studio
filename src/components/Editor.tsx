@@ -1,17 +1,19 @@
 import { useState, useEffect, useRef } from 'react';
 import { SavedScript } from '../types';
 import { calculateStats } from '../utils';
-import { Printer, Pause, Quote, BarChart2, Info, Flag, AlertCircle, Sparkles, Loader2, X, Check, Save } from 'lucide-react';
+import { Printer, Pause, Quote, BarChart2, Info, Flag, AlertCircle, Sparkles, Loader2, X, Check, Save, Trash2 } from 'lucide-react';
 import { scriptsApi } from '../lib/supabase';
 
 interface Props {
   script: SavedScript;
   onChange: (s: SavedScript) => void;
+  onDelete?: (id: string) => void;
 }
 
-export default function Editor({ script, onChange }: Props) {
+export default function Editor({ script, onChange, onDelete }: Props) {
   const [showStats, setShowStats] = useState(false);
   const [showAiModal, setShowAiModal] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiPreview, setAiPreview] = useState<string | null>(null);
   const [aiPrompt, setAiPrompt] = useState("");
@@ -19,29 +21,67 @@ export default function Editor({ script, onChange }: Props) {
   const stats = calculateStats(script.content);
   
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isFirstMountRef = useRef(true);
+  const lastSavedContentRef = useRef(script.content);
+  const lastSavedTitleRef = useRef(script.title);
 
-  // Auto-Save Local com Debounce
+  // Auto-Save Local com Debounce - APENAS quando o usuário realmente digita/edita
   useEffect(() => {
-    // Se houve mudança, prepara para salvar
+    // Ignora na primeira montagem para evitar salvar scripts duplicados automaticamente
+    if (isFirstMountRef.current) {
+      isFirstMountRef.current = false;
+      lastSavedContentRef.current = script.content;
+      lastSavedTitleRef.current = script.title;
+      return;
+    }
+
+    // Se o conteúdo e o título são idênticos ao já salvo, não dispara auto-save
+    if (script.content === lastSavedContentRef.current && script.title === lastSavedTitleRef.current) {
+      return;
+    }
+
     setSaveStatus('saving');
 
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
     saveTimeoutRef.current = setTimeout(async () => {
       try {
-        await scriptsApi.upsert(script);
+        const saved = await scriptsApi.upsert(script);
+        lastSavedContentRef.current = script.content;
+        lastSavedTitleRef.current = script.title;
         setSaveStatus('saved');
         setTimeout(() => setSaveStatus('idle'), 2000);
+
+        // Se o script foi salvo com um ID estável diferente de 'temp', atualiza no estado
+        if (saved && saved.id && saved.id !== script.id) {
+          onChange({ ...script, id: saved.id });
+        }
       } catch (err) {
         console.error('Falha no auto-save local:', err);
         setSaveStatus('error');
       }
-    }, 1500);
+    }, 1200);
 
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
-  }, [script.content, script.title]);
+  }, [script.content, script.title, script.id, onChange]);
+
+  const handleManualSave = async () => {
+    setSaveStatus('saving');
+    try {
+      const saved = await scriptsApi.upsert(script);
+      lastSavedContentRef.current = script.content;
+      lastSavedTitleRef.current = script.title;
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 2000);
+      if (saved && saved.id && saved.id !== script.id) {
+        onChange({ ...script, id: saved.id });
+      }
+    } catch (err) {
+      setSaveStatus('error');
+    }
+  };
 
   const handleAiAction = async (type: 'improve' | 'summarize' | 'generate') => {
     setIsAiLoading(true);
@@ -183,11 +223,83 @@ export default function Editor({ script, onChange }: Props) {
            <button onClick={() => setShowStats(!showStats)} className="flex items-center gap-1.5 px-3 py-1.5 text-gray-400 hover:text-white rounded text-sm transition-colors shrink-0">
             <BarChart2 size={16} /> Estatísticas
           </button>
+          <button onClick={handleManualSave} className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 rounded text-sm font-medium transition-colors border border-amber-500/40 shrink-0" title="Salvar alterações agora">
+            <Save size={16} /> Salvar
+          </button>
+          {onDelete && (
+            <button 
+              onClick={() => setShowDeleteConfirm(true)} 
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-950/40 hover:bg-red-900/60 text-red-400 hover:text-red-300 rounded text-sm font-medium transition-colors border border-red-800/50 shrink-0" 
+              title="Excluir este roteiro"
+            >
+              <Trash2 size={15} /> Excluir
+            </button>
+          )}
           <button onClick={handlePrint} className="flex items-center gap-1.5 px-4 py-1.5 bg-gray-800 hover:bg-gray-700 text-white rounded text-sm font-medium transition-colors border border-gray-700 shrink-0">
             <Printer size={16} /> Exportar
           </button>
         </div>
       </div>
+
+      {/* Modal Seguro de Confirmação de Exclusão no Editor */}
+      {showDeleteConfirm && (
+        <div 
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => setShowDeleteConfirm(false)}
+        >
+          <div 
+            className="bg-[#181926] border border-gray-700/80 rounded-2xl p-6 max-w-md w-full shadow-2xl relative"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button 
+              onClick={() => setShowDeleteConfirm(false)}
+              className="absolute top-4 right-4 text-gray-400 hover:text-white p-1 rounded-lg hover:bg-gray-800 transition-colors"
+            >
+              <X size={18} />
+            </button>
+            
+            <div className="flex items-center gap-3.5 mb-4">
+              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400">
+                <Trash2 size={24} />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Excluir Roteiro</h3>
+                <p className="text-xs text-gray-400">Esta ação não poderá ser desfeita</p>
+              </div>
+            </div>
+
+            <div className="bg-black/50 p-3.5 rounded-xl border border-gray-800/80 mb-6">
+              <p className="text-sm text-gray-300">
+                Tem certeza de que deseja apagar o roteiro:
+              </p>
+              <p className="text-base font-semibold text-white mt-1 truncate">
+                "{script.title || 'Sem Título'}"
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirm(false)}
+                className="px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-xl text-sm font-medium transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  onDelete?.(script.id);
+                }}
+                className="px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl text-sm font-bold flex items-center gap-2 transition-colors shadow-lg shadow-red-600/30"
+              >
+                <Trash2 size={16} />
+                Sim, Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAiModal && (
         <div className="bg-indigo-950/40 border border-indigo-900/50 rounded-xl p-5 mb-2 relative animate-in fade-in slide-in-from-top-2">

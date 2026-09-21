@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Pause, RotateCcw, FastForward, Rewind, Plus, Minus, ArrowLeft, Smartphone, WifiOff } from 'lucide-react';
+import { Play, Pause, RotateCcw, FastForward, Rewind, Plus, Minus, ArrowLeft, Smartphone, WifiOff, QrCode } from 'lucide-react';
+import RemotePairModal from './RemotePairModal';
 
 interface RemoteState {
   isPlaying: boolean;
@@ -20,6 +21,7 @@ interface Props {
 export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props) {
   const [roomCode, setRoomCode] = useState(initialRoomCode.toUpperCase() || 'STUDIO1');
   const [isConnected, setIsConnected] = useState(false);
+  const [showQrModal, setShowQrModal] = useState(false);
   const [state, setState] = useState<RemoteState>({
     isPlaying: false,
     speed: 2,
@@ -59,6 +61,11 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
         room: roomCode.trim().toUpperCase(),
         role: 'controller'
       }));
+      // Request immediate state sync from teleprompter host
+      ws.send(JSON.stringify({
+        type: 'command',
+        action: 'request_sync'
+      }));
     };
 
     ws.onmessage = (event) => {
@@ -67,10 +74,10 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
         if (data.type === 'sync_state') {
           setState(prev => ({
             ...prev,
-            isPlaying: data.isPlaying ?? prev.isPlaying,
-            speed: data.speed ?? prev.speed,
-            fontSize: data.fontSize ?? prev.fontSize,
-            progressPercent: data.progressPercent ?? prev.progressPercent,
+            isPlaying: data.isPlaying !== undefined ? data.isPlaying : prev.isPlaying,
+            speed: data.speed !== undefined ? data.speed : prev.speed,
+            fontSize: data.fontSize !== undefined ? data.fontSize : prev.fontSize,
+            progressPercent: data.progressPercent !== undefined ? data.progressPercent : prev.progressPercent,
             scriptTitle: data.scriptTitle || prev.scriptTitle,
             wordCount: data.wordCount || prev.wordCount,
             cuePoints: data.cuePoints || prev.cuePoints,
@@ -79,6 +86,9 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
         } else if (data.type === 'room_status') {
           if (!data.hasHost) {
             setState(prev => ({ ...prev, scriptTitle: 'Aguardando o Teleprompter conectar nesta sala...' }));
+          } else {
+            // Host is present, request sync if title is still placeholder
+            sendCommand('request_sync');
           }
         }
       } catch (err) {
@@ -148,13 +158,22 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowQrModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1A1B28] hover:bg-gray-800 border border-amber-500/30 text-amber-400 rounded-lg text-xs font-semibold transition-colors"
+            title="Exibir QR Code para parear outro aparelho"
+          >
+            <QrCode size={14} />
+            <span className="hidden sm:inline">QR Code</span>
+          </button>
+
           {isConnected ? (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-950/60 border border-emerald-700/60 rounded-full text-[11px] text-emerald-400 font-medium">
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-950/60 border border-emerald-700/60 rounded-full text-[11px] text-emerald-400 font-medium">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
               Sincronizado
             </div>
           ) : (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-red-950/60 border border-red-700/60 rounded-full text-[11px] text-red-400 font-medium">
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-950/60 border border-red-700/60 rounded-full text-[11px] text-red-400 font-medium">
               <WifiOff size={12} />
               Desconectado
             </div>
@@ -189,7 +208,12 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
       {/* Primary Big Action: PLAY / PAUSE */}
       <div className="my-auto flex flex-col items-center justify-center py-4">
         <button
-          onClick={() => sendCommand('toggle_play')}
+          onClick={() => {
+            const nextPlaying = !state.isPlaying;
+            setState(prev => ({ ...prev, isPlaying: nextPlaying }));
+            sendCommand(nextPlaying ? 'play' : 'pause');
+          }}
+          disabled={!isConnected}
           className={`w-36 h-36 sm:w-44 sm:h-44 rounded-full flex flex-col items-center justify-center shadow-2xl transition-all duration-200 active:scale-95 border-4 ${
             state.isPlaying
               ? 'bg-amber-500/20 border-amber-500 text-amber-400 hover:bg-amber-500/30 ring-8 ring-amber-500/10'
@@ -208,7 +232,9 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
             </>
           )}
         </button>
-        <p className="text-xs text-gray-500 mt-4">Toque para pausar ou continuar a fala</p>
+        <p className="text-xs text-gray-500 mt-4">
+          {state.isPlaying ? 'Texto em reprodução • Toque para pausar' : 'Teleprompter parado • Toque para iniciar'}
+        </p>
       </div>
 
       {/* Control Dials Grid */}
@@ -221,14 +247,22 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
           </div>
           <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={() => sendCommand('speed_down')}
+              onClick={() => {
+                const nextSpeed = Math.max(0.5, +(state.speed - 0.5).toFixed(1));
+                setState(prev => ({ ...prev, speed: nextSpeed }));
+                sendCommand('speed_down');
+              }}
               className="py-3 bg-gray-800 hover:bg-gray-700 active:bg-gray-600 rounded-lg flex items-center justify-center text-gray-200 font-bold transition-colors"
               title="Diminuir Velocidade"
             >
               <Minus size={20} />
             </button>
             <button
-              onClick={() => sendCommand('speed_up')}
+              onClick={() => {
+                const nextSpeed = Math.min(10, +(state.speed + 0.5).toFixed(1));
+                setState(prev => ({ ...prev, speed: nextSpeed }));
+                sendCommand('speed_up');
+              }}
               className="py-3 bg-amber-600/30 border border-amber-600/50 hover:bg-amber-600/50 active:bg-amber-600 rounded-lg flex items-center justify-center text-amber-300 font-bold transition-colors"
               title="Aumentar Velocidade"
             >
@@ -245,14 +279,22 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
           </div>
           <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={() => sendCommand('font_down')}
+              onClick={() => {
+                const nextFont = Math.max(20, state.fontSize - 4);
+                setState(prev => ({ ...prev, fontSize: nextFont }));
+                sendCommand('font_down');
+              }}
               className="py-3 bg-gray-800 hover:bg-gray-700 active:bg-gray-600 rounded-lg flex items-center justify-center text-gray-200 font-bold transition-colors"
               title="Diminuir Fonte"
             >
               <Minus size={20} />
             </button>
             <button
-              onClick={() => sendCommand('font_up')}
+              onClick={() => {
+                const nextFont = Math.min(150, state.fontSize + 4);
+                setState(prev => ({ ...prev, fontSize: nextFont }));
+                sendCommand('font_up');
+              }}
               className="py-3 bg-indigo-600/30 border border-indigo-600/50 hover:bg-indigo-600/50 active:bg-indigo-600 rounded-lg flex items-center justify-center text-indigo-300 font-bold transition-colors"
               title="Aumentar Fonte"
             >
@@ -273,7 +315,10 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
         </button>
 
         <button
-          onClick={() => sendCommand('restart')}
+          onClick={() => {
+            setState(prev => ({ ...prev, progressPercent: 0, isPlaying: false }));
+            sendCommand('restart');
+          }}
           className="py-3 px-2 bg-gray-900 border border-gray-800 hover:bg-gray-800 active:bg-gray-700 rounded-xl flex flex-col items-center justify-center text-red-300 transition-colors"
         >
           <RotateCcw size={20} className="mb-1 text-red-400" />
@@ -288,6 +333,14 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
           <span className="text-[11px] font-medium">+5 segundos</span>
         </button>
       </div>
+
+      <RemotePairModal
+        isOpen={showQrModal}
+        onClose={() => setShowQrModal(false)}
+        roomCode={roomCode}
+        onChangeRoomCode={(newCode) => setRoomCode(newCode)}
+        controllersCount={isConnected ? 1 : 0}
+      />
     </div>
   );
 }

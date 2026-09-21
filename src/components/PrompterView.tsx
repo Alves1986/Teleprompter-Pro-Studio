@@ -15,9 +15,20 @@ interface Props {
   config: PrompterConfig;
   onUpdateConfig: (cfg: Partial<PrompterConfig>) => void;
   onClose: () => void;
+  roomCode?: string;
+  onChangeRoomCode?: (code: string) => void;
+  autoPlay?: boolean;
 }
 
-export default function PrompterView({ script, config, onUpdateConfig, onClose }: Props) {
+export default function PrompterView({ 
+  script, 
+  config, 
+  onUpdateConfig, 
+  onClose,
+  roomCode: propRoomCode,
+  onChangeRoomCode,
+  autoPlay = false
+}: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -25,6 +36,22 @@ export default function PrompterView({ script, config, onUpdateConfig, onClose }
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const requestRef = useRef<number>();
   const lastTimeRef = useRef<number>();
+
+  // Up-to-date refs to eliminate stale closures in WebSocket event handlers
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
+
+  const configRef = useRef(config);
+  configRef.current = config;
+
+  const onUpdateConfigRef = useRef(onUpdateConfig);
+  onUpdateConfigRef.current = onUpdateConfig;
+
+  const progressRef = useRef(progress);
+  progressRef.current = progress;
+
+  const remainingRef = useRef(estimatedRemainingSeconds);
+  remainingRef.current = estimatedRemainingSeconds;
 
   // Advanced Studio State
   const [showCountdown, setShowCountdown] = useState(false);
@@ -40,13 +67,21 @@ export default function PrompterView({ script, config, onUpdateConfig, onClose }
   const blocks = useMemo(() => parseScriptBlocks(script.content), [script.content]);
 
   // WebSocket Remote Pairing
-  const [roomCode, setRoomCode] = useState<string>(() => {
+  const [internalRoomCode, setInternalRoomCode] = useState<string>(() => {
+    if (propRoomCode) return propRoomCode;
     const cached = sessionStorage.getItem('tp_room_code');
     if (cached) return cached;
     const generated = 'STUDIO-' + Math.floor(1000 + Math.random() * 9000);
     sessionStorage.setItem('tp_room_code', generated);
     return generated;
   });
+
+  const roomCode = propRoomCode || internalRoomCode;
+  const setRoomCode = (newCode: string) => {
+    setInternalRoomCode(newCode);
+    onChangeRoomCode?.(newCode);
+    sessionStorage.setItem('tp_room_code', newCode);
+  };
   const [controllersCount, setControllersCount] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -61,6 +96,113 @@ export default function PrompterView({ script, config, onUpdateConfig, onClose }
     }
   }, []);
 
+  // Broadcast state to remote controllers
+  const syncStateToRemote = useCallback((override?: Partial<{ isPlaying: boolean; speed: number; fontSize: number; progressPercent: number }>) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'sync_state',
+        isPlaying: override?.isPlaying !== undefined ? override.isPlaying : isPlayingRef.current,
+        speed: override?.speed !== undefined ? override.speed : configRef.current.speed,
+        fontSize: override?.fontSize !== undefined ? override.fontSize : configRef.current.fontSize,
+        progressPercent: override?.progressPercent !== undefined ? override.progressPercent : progressRef.current,
+        scriptTitle: script.title,
+        estimatedRemaining: remainingRef.current
+      }));
+    }
+  }, [script.title]);
+
+  // Handle Play/Pause with optional Countdown
+  const triggerTogglePlay = useCallback(() => {
+    if (isPlayingRef.current) {
+      setIsPlaying(false);
+      setShowCountdown(false);
+      syncStateToRemote({ isPlaying: false });
+    } else {
+      if (configRef.current.countdownDuration && configRef.current.countdownDuration > 0) {
+        setShowCountdown(true);
+      } else {
+        setIsPlaying(true);
+        syncStateToRemote({ isPlaying: true });
+      }
+    }
+  }, [syncStateToRemote]);
+
+  // Remote Commands Dispatcher
+  const handleRemoteCommand = useCallback((action: string, payload?: any) => {
+    switch (action) {
+      case 'toggle_play':
+        triggerTogglePlay();
+        break;
+      case 'play':
+        if (!isPlayingRef.current) {
+          if (configRef.current.countdownDuration && configRef.current.countdownDuration > 0) {
+            setShowCountdown(true);
+          } else {
+            setIsPlaying(true);
+            syncStateToRemote({ isPlaying: true });
+          }
+        }
+        break;
+      case 'pause':
+        setIsPlaying(false);
+        setShowCountdown(false);
+        syncStateToRemote({ isPlaying: false });
+        break;
+      case 'speed_up': {
+        const nextSpeed = Math.min(10, +(configRef.current.speed + 0.5).toFixed(1));
+        onUpdateConfigRef.current({ speed: nextSpeed });
+        syncStateToRemote({ speed: nextSpeed });
+        break;
+      }
+      case 'speed_down': {
+        const nextSpeed = Math.max(0.5, +(configRef.current.speed - 0.5).toFixed(1));
+        onUpdateConfigRef.current({ speed: nextSpeed });
+        syncStateToRemote({ speed: nextSpeed });
+        break;
+      }
+      case 'font_up': {
+        const nextFont = Math.min(150, configRef.current.fontSize + 4);
+        onUpdateConfigRef.current({ fontSize: nextFont });
+        syncStateToRemote({ fontSize: nextFont });
+        break;
+      }
+      case 'font_down': {
+        const nextFont = Math.max(20, configRef.current.fontSize - 4);
+        onUpdateConfigRef.current({ fontSize: nextFont });
+        syncStateToRemote({ fontSize: nextFont });
+        break;
+      }
+      case 'restart':
+        setIsPlaying(false);
+        setShowCountdown(false);
+        if (scrollRef.current) scrollRef.current.scrollTop = 0;
+        setProgress(0);
+        syncStateToRemote({ isPlaying: false, progressPercent: 0 });
+        break;
+      case 'rewind':
+        if (scrollRef.current) {
+          const px = Math.max(80, (configRef.current.speed || 2) * 25 * 5);
+          scrollRef.current.scrollTop = Math.max(0, scrollRef.current.scrollTop - px);
+        }
+        break;
+      case 'fast_forward':
+        if (scrollRef.current) {
+          const px = Math.max(80, (configRef.current.speed || 2) * 25 * 5);
+          const maxScroll = scrollRef.current.scrollHeight - scrollRef.current.clientHeight;
+          scrollRef.current.scrollTop = Math.min(maxScroll, scrollRef.current.scrollTop + px);
+        }
+        break;
+      case 'jump_cue':
+        if (typeof payload?.lineIndex === 'number') {
+          jumpToLine(payload.lineIndex);
+        }
+        break;
+    }
+  }, [triggerTogglePlay, syncStateToRemote]);
+
+  const handleRemoteCommandRef = useRef(handleRemoteCommand);
+  handleRemoteCommandRef.current = handleRemoteCommand;
+
   // Connect to Remote Control WebSocket Server
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -73,6 +215,8 @@ export default function PrompterView({ script, config, onUpdateConfig, onClose }
         room: roomCode,
         role: 'host'
       }));
+      // Push state immediately upon joining
+      syncStateToRemote();
     };
 
     ws.onmessage = (event) => {
@@ -80,8 +224,10 @@ export default function PrompterView({ script, config, onUpdateConfig, onClose }
         const msg = JSON.parse(event.data);
         if (msg.type === 'room_status') {
           setControllersCount(msg.controllersCount || 0);
+        } else if (msg.type === 'request_sync') {
+          syncStateToRemote();
         } else if (msg.type === 'command') {
-          handleRemoteCommand(msg.action);
+          handleRemoteCommandRef.current(msg.action, msg.payload);
         }
       } catch (err) {
         console.error('Remote WS msg error:', err);
@@ -95,83 +241,22 @@ export default function PrompterView({ script, config, onUpdateConfig, onClose }
         ws.close();
       }
     };
-  }, [roomCode]);
-
-  // Broadcast state to remote controllers
-  const syncStateToRemote = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'sync_state',
-        isPlaying,
-        speed: config.speed,
-        fontSize: config.fontSize,
-        progressPercent: progress,
-        scriptTitle: script.title,
-        estimatedRemaining: estimatedRemainingSeconds
-      }));
-    }
-  }, [isPlaying, config.speed, config.fontSize, progress, script.title, estimatedRemainingSeconds]);
+  }, [roomCode, syncStateToRemote]);
 
   useEffect(() => {
     syncStateToRemote();
   }, [isPlaying, config.speed, config.fontSize, Math.round(progress), syncStateToRemote]);
 
-  // Handle Play/Pause with optional Countdown
-  const triggerTogglePlay = () => {
-    if (isPlaying) {
-      setIsPlaying(false);
-      setShowCountdown(false);
-    } else {
+  // AutoPlay on mount if triggered from remote
+  useEffect(() => {
+    if (autoPlay) {
       if (config.countdownDuration && config.countdownDuration > 0) {
         setShowCountdown(true);
       } else {
         setIsPlaying(true);
       }
     }
-  };
-
-  // Remote Commands Dispatcher
-  const handleRemoteCommand = (action: string) => {
-    switch (action) {
-      case 'toggle_play':
-        triggerTogglePlay();
-        break;
-      case 'play':
-        if (!isPlaying) triggerTogglePlay();
-        break;
-      case 'pause':
-        setIsPlaying(false);
-        setShowCountdown(false);
-        break;
-      case 'speed_up':
-        onUpdateConfig({ speed: Math.min(10, config.speed + 0.5) });
-        break;
-      case 'speed_down':
-        onUpdateConfig({ speed: Math.max(0.5, config.speed - 0.5) });
-        break;
-      case 'font_up':
-        onUpdateConfig({ fontSize: Math.min(150, config.fontSize + 4) });
-        break;
-      case 'font_down':
-        onUpdateConfig({ fontSize: Math.max(20, config.fontSize - 4) });
-        break;
-      case 'restart':
-        if (scrollRef.current) scrollRef.current.scrollTop = 0;
-        break;
-      case 'rewind':
-        if (scrollRef.current) {
-          const px = config.speed * 20 * 5;
-          scrollRef.current.scrollTop -= px;
-        }
-        break;
-      case 'fast_forward':
-        if (scrollRef.current) {
-          const px = config.speed * 20 * 5;
-          scrollRef.current.scrollTop += px;
-        }
-        break;
-    }
-  };
+  }, [autoPlay, config.countdownDuration]);
 
   // Theme styling
   const getThemeClasses = () => {
@@ -229,7 +314,7 @@ export default function PrompterView({ script, config, onUpdateConfig, onClose }
         }
         return <span key={j}>{part}</span>;
       });
-      return <p key={i} className="mb-4">{renderedParts}</p>;
+      return <div key={i} className="mb-4">{renderedParts}</div>;
     });
   };
 
@@ -552,14 +637,17 @@ export default function PrompterView({ script, config, onUpdateConfig, onClose }
         {/* Remote Pairing Quick Icon */}
         <button
           onClick={() => setIsRemoteModalOpen(true)}
-          className={`p-3.5 rounded-full border shadow-2xl transition-all hover:scale-105 active:scale-95 ${
+          className={`flex items-center gap-2 px-3.5 py-3 rounded-full border shadow-2xl transition-all hover:scale-105 active:scale-95 ${
             controllersCount > 0
-              ? 'bg-emerald-900/90 border-emerald-500 text-emerald-300'
-              : 'bg-[#1E2030]/90 border-gray-700 text-gray-300 hover:text-amber-400'
+              ? 'bg-emerald-950/90 border-emerald-500 text-emerald-300'
+              : 'bg-[#1E2030]/95 border-gray-700 text-gray-300 hover:text-amber-400'
           }`}
           title={controllersCount > 0 ? `${controllersCount} celular(es) conectado(s)` : 'Conectar controle remoto via QR Code'}
         >
           <Smartphone size={20} />
+          <span className="text-xs font-semibold pr-1">
+            {controllersCount > 0 ? `${controllersCount} conectado` : 'QR Code Celular'}
+          </span>
         </button>
 
         {/* Escaleta Quick Drawer Button */}
