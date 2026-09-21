@@ -20,6 +20,8 @@ export interface PrompterConfig {
   showProgressBar: boolean;
   showTimeRemaining: boolean;
   rotation?: number;
+  autoOrientation?: boolean; // Reconhecimento automático ao girar/mover a tela (padrão: true)
+  orientationMode?: 'auto' | 'portrait' | 'landscape';
   // Novos recursos avançados de estúdio
   countdownDuration: number; // 0, 3, 5, 10 segundos
   cameraEnabled: boolean;

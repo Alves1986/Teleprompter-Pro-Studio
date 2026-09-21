@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Video, Circle, Square, Pause, Play, Download, X, Eye, RefreshCw, AlertCircle } from 'lucide-react';
+import { Video, Circle, Square, Pause, Play, Download, X, Eye, RefreshCw, AlertCircle, Mic, MicOff } from 'lucide-react';
 import { formatTime } from '../utils';
 
 interface Props {
@@ -17,11 +17,13 @@ export default function CameraRecorder({
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioRecordStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [recordWithMic, setRecordWithMic] = useState(false);
   const [recordDuration, setRecordDuration] = useState(0);
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -44,13 +46,15 @@ export default function CameraRecorder({
   const startCamera = async () => {
     setCameraError(null);
     try {
+      // audio: false is essential so camera display never locks the microphone,
+      // allowing Speech Recognition / Voice Follow to stay 100% active and responsive!
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'user',
           width: { ideal: 1280 },
           height: { ideal: 720 }
         },
-        audio: true
+        audio: false
       });
       mediaStreamRef.current = stream;
       if (videoRef.current) {
@@ -58,7 +62,7 @@ export default function CameraRecorder({
       }
     } catch (err: any) {
       console.error('Camera access error:', err);
-      setCameraError('Permissão da câmera ou microfone não concedida.');
+      setCameraError('Permissão da câmera não concedida no navegador.');
       onToggleEnabled(false);
     }
   };
@@ -71,25 +75,45 @@ export default function CameraRecorder({
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
       mediaStreamRef.current = null;
     }
+    if (audioRecordStreamRef.current) {
+      audioRecordStreamRef.current.getTracks().forEach(track => track.stop());
+      audioRecordStreamRef.current = null;
+    }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
   };
 
-  const startRecording = () => {
+  const startRecording = async () => {
     if (!mediaStreamRef.current) return;
     recordedChunksRef.current = [];
     setRecordedVideoUrl(null);
     setRecordDuration(0);
 
     try {
+      let recordingStream = mediaStreamRef.current;
+
+      // If user enabled audio recording, acquire mic audio for the recording take
+      if (recordWithMic) {
+        try {
+          const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          audioRecordStreamRef.current = audioStream;
+          recordingStream = new MediaStream([
+            ...mediaStreamRef.current.getVideoTracks(),
+            ...audioStream.getAudioTracks()
+          ]);
+        } catch (audioErr) {
+          console.warn('Microfone não acessível para gravação, gravando apenas vídeo:', audioErr);
+        }
+      }
+
       const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
         ? 'video/webm;codecs=vp9,opus'
         : MediaRecorder.isTypeSupported('video/mp4')
         ? 'video/mp4'
         : 'video/webm';
 
-      const recorder = new MediaRecorder(mediaStreamRef.current, { mimeType });
+      const recorder = new MediaRecorder(recordingStream, { mimeType });
       
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) {
@@ -101,6 +125,12 @@ export default function CameraRecorder({
         const blob = new Blob(recordedChunksRef.current, { type: mimeType });
         const url = URL.createObjectURL(blob);
         setRecordedVideoUrl(url);
+
+        // Clean up temporary audio tracks
+        if (audioRecordStreamRef.current) {
+          audioRecordStreamRef.current.getTracks().forEach(t => t.stop());
+          audioRecordStreamRef.current = null;
+        }
       };
 
       recorder.start(1000);
@@ -248,6 +278,26 @@ export default function CameraRecorder({
             >
               <RefreshCw size={13} />
             </button>
+
+            {/* Audio in recording toggle */}
+            {!isRecording && (
+              <button
+                onClick={() => setRecordWithMic(!recordWithMic)}
+                className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 ${
+                  recordWithMic 
+                    ? 'bg-red-600/30 text-red-400 border border-red-500/40' 
+                    : 'bg-gray-800 text-gray-400 hover:text-gray-200'
+                }`}
+                title={
+                  recordWithMic 
+                    ? 'Gravar vídeo COM áudio do microfone' 
+                    : 'Gravação sem áudio (Recomendado para manter o Reconhecimento de Voz 100% ativo)'
+                }
+              >
+                {recordWithMic ? <Mic size={13} /> : <MicOff size={13} />}
+                <span className="text-[10px] hidden sm:inline">{recordWithMic ? 'Mic ON' : 'Mic OFF'}</span>
+              </button>
+            )}
 
             {/* Close camera */}
             <button

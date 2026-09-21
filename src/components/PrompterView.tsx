@@ -7,8 +7,11 @@ import CameraRecorder from './CameraRecorder';
 import VoiceFollowTracker from './VoiceFollowTracker';
 import RemotePairModal from './RemotePairModal';
 import ShortcutsModal, { DEFAULT_KEY_BINDINGS } from './ShortcutsModal';
-import { Pause, Play, Smartphone, ListOrdered, Clock } from 'lucide-react';
+import { Pause, Play, Smartphone, ListOrdered, Clock, Download, X } from 'lucide-react';
 import { parseScriptBlocks, formatTime } from '../utils';
+import { useOrientation } from '../hooks/useOrientation';
+import { usePWAInstall } from '../hooks/usePWAInstall';
+import InstallGuideModal from './InstallGuideModal';
 
 interface Props {
   script: SavedScript;
@@ -62,6 +65,9 @@ export default function PrompterView({
   const [cameraOpacity, setCameraOpacity] = useState(config.cameraOpacity || 35);
   const [isVoiceFollowActive, setIsVoiceFollowActive] = useState(config.voiceFollowEnabled || false);
   const [activeLineIndex, setActiveLineIndex] = useState(0);
+  const pwaState = usePWAInstall();
+  const [isInstallGuideOpen, setIsInstallGuideOpen] = useState(false);
+  const [showTabletTip, setShowTabletTip] = useState(!pwaState.isInstalled && (pwaState.isTablet || pwaState.isMobile));
 
   // Parse Script Blocks for Escaleta
   const blocks = useMemo(() => parseScriptBlocks(script.content), [script.content]);
@@ -85,6 +91,11 @@ export default function PrompterView({
   const [controllersCount, setControllersCount] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
 
+  // Real-time automatic screen orientation detection (vertical vs horizontal)
+  const orientationInfo = useOrientation();
+  const [orientationNotice, setOrientationNotice] = useState<string | null>(null);
+  const prevOrientationRef = useRef<string>(orientationInfo.orientation);
+
   // Screen Orientation Unlocking
   useEffect(() => {
     if (typeof screen !== 'undefined' && screen.orientation && typeof (screen.orientation as any).unlock === 'function') {
@@ -95,6 +106,37 @@ export default function PrompterView({
       }
     }
   }, []);
+
+  // Automatic real-time orientation movement recognition
+  useEffect(() => {
+    if (prevOrientationRef.current !== orientationInfo.orientation) {
+      prevOrientationRef.current = orientationInfo.orientation;
+      const msg = orientationInfo.isLandscape
+        ? 'Tela Horizontal (16:9) Detectada • Modo Panorâmico'
+        : 'Tela Vertical (9:16) Detectada • Margens e Fonte Adaptadas';
+      setOrientationNotice(msg);
+      const timer = setTimeout(() => setOrientationNotice(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [orientationInfo.orientation, orientationInfo.isLandscape]);
+
+  // Active orientation resolution: automatically follows sensor unless manually overridden
+  const activeOrientation = (config.orientationMode && config.orientationMode !== 'auto')
+    ? config.orientationMode
+    : orientationInfo.orientation;
+  const isLandscape = activeOrientation === 'landscape';
+  const isPortrait = !isLandscape;
+
+  // Responsive layout adaptation for vertical vs horizontal screens
+  // When in portrait/vertical mode:
+  // 1. Text width percentage expands so narrow phone screens or vertical displays don't have squished lines
+  // 2. Double column collapses into single column to prevent squeezed unreadable text
+  // 3. Font size adapts safely if screen is narrow
+  const effectiveWidth = isPortrait ? Math.min(100, Math.max(config.width, 92)) : config.width;
+  const effectiveColumnMode = isPortrait ? 'single' : config.columnMode;
+  const effectiveFontSize = isPortrait && orientationInfo.width < 600
+    ? Math.min(config.fontSize, Math.max(20, Math.round(orientationInfo.width * 0.11)))
+    : config.fontSize;
 
   // Broadcast state to remote controllers
   const syncStateToRemote = useCallback((override?: Partial<{ isPlaying: boolean; speed: number; fontSize: number; progressPercent: number }>) => {
@@ -583,27 +625,37 @@ export default function PrompterView({
         </div>
       )}
 
+      {/* Screen Orientation Auto-Recognition Notification Toast */}
+      {orientationNotice && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 bg-black/90 backdrop-blur-md border border-amber-500/60 rounded-full text-amber-300 text-xs sm:text-sm font-semibold shadow-2xl flex items-center gap-2.5 animate-in fade-in slide-in-from-top-4 duration-300 pointer-events-none">
+          <Smartphone size={16} className={`transition-transform duration-300 ${isLandscape ? 'rotate-90 text-amber-400' : 'text-amber-400'}`} />
+          <span>{orientationNotice}</span>
+        </div>
+      )}
+
       {/* The Scrollable Prompter Area */}
       <div 
         ref={scrollRef}
         onScroll={handleManualScroll}
         onDoubleClick={triggerTogglePlay}
-        className={`flex-1 overflow-y-auto no-scrollbar pt-[50vh] pb-[50vh] relative z-10 ${getTransformClasses()}`}
+        className={`flex-1 overflow-y-auto no-scrollbar pt-[50vh] pb-[50vh] relative z-10 transition-all duration-300 ${getTransformClasses()}`}
         style={{ 
-          fontSize: `${config.fontSize}px`, 
+          fontSize: `${effectiveFontSize}px`, 
           lineHeight: config.lineHeight,
-          letterSpacing: `${config.letterSpacing}px`
+          letterSpacing: `${config.letterSpacing}px`,
+          transform: config.rotation ? `rotate(${config.rotation}deg)` : undefined
         }}
       >
         <div 
-          className="mx-auto" 
+          className="mx-auto transition-all duration-300" 
           style={{ 
-            width: `${config.width}%`,
-            columnCount: config.columnMode === 'double' ? 2 : 1,
+            width: `${effectiveWidth}%`,
+            maxWidth: isPortrait ? '100%' : '1400px',
+            columnCount: effectiveColumnMode === 'double' ? 2 : 1,
             columnGap: '8rem'
           }}
         >
-          {config.columnMode === 'single' ? (
+          {effectiveColumnMode === 'single' ? (
             <div className="whitespace-pre-wrap">
               {renderContent(script.content)}
             </div>
@@ -684,6 +736,27 @@ export default function PrompterView({
         />
       )}
 
+      {/* Discreet Tablet / Mobile Install Tip Bar when not playing */}
+      {showTabletTip && !isPlaying && !pwaState.isInstalled && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 bg-[#12131C]/90 border border-amber-500/40 text-gray-200 px-3 py-1.5 rounded-full text-xs shadow-xl backdrop-blur-md animate-fadeIn">
+          <span className="text-amber-400 font-semibold">Dica para {pwaState.platformName}:</span>
+          <span className="hidden sm:inline text-gray-300">Baixe o app para leitura em tela cheia sem barras</span>
+          <button
+            onClick={() => setIsInstallGuideOpen(true)}
+            className="text-amber-400 hover:text-amber-300 font-bold underline flex items-center gap-1 ml-1"
+          >
+            <Download size={13} /> Instalar
+          </button>
+          <button
+            onClick={() => setShowTabletTip(false)}
+            className="text-gray-400 hover:text-white p-0.5 rounded ml-1"
+            title="Fechar dica"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {/* Escaleta / Blocks Drawer */}
       <EscaletaDrawer
         isOpen={isEscaletaOpen}
@@ -722,6 +795,8 @@ export default function PrompterView({
         onToggleVoiceFollow={() => setIsVoiceFollowActive(!isVoiceFollowActive)}
         isVoiceFollowActive={isVoiceFollowActive}
         onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
+        onOpenInstallGuide={() => setIsInstallGuideOpen(true)}
+        isPWAInstalled={pwaState.isInstalled}
       />
 
       {/* Keyboard & Bluetooth Pedal Mapping Modal */}
@@ -736,6 +811,13 @@ export default function PrompterView({
         onTogglePedal={(enabled) => {
           onUpdateConfig({ pedalShortcutsEnabled: enabled });
         }}
+      />
+
+      {/* Install Guide Modal */}
+      <InstallGuideModal
+        isOpen={isInstallGuideOpen}
+        onClose={() => setIsInstallGuideOpen(false)}
+        pwaState={pwaState}
       />
     </div>
   );

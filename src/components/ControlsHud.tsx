@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { PrompterConfig, AppTheme } from '../types';
+import { useOrientation } from '../hooks/useOrientation';
 import { 
   Settings, Maximize, Minimize, X, Type, MonitorOff, Plus, Minus, Play, 
-  Pause, RotateCcw, Smartphone, Video, Mic, ListOrdered, Timer, Keyboard 
+  Pause, RotateCcw, Smartphone, Video, Mic, ListOrdered, Timer, Keyboard, Download
 } from 'lucide-react';
 
 interface Props {
@@ -21,6 +22,8 @@ interface Props {
   onToggleVoiceFollow?: () => void;
   isVoiceFollowActive?: boolean;
   onOpenShortcuts?: () => void;
+  onOpenInstallGuide?: () => void;
+  isPWAInstalled?: boolean;
 }
 
 const ControlStepper = ({ 
@@ -85,48 +88,54 @@ export default function ControlsHud({
   isCameraActive = false,
   onToggleVoiceFollow,
   isVoiceFollowActive = false,
-  onOpenShortcuts
+  onOpenShortcuts,
+  onOpenInstallGuide,
+  isPWAInstalled = false
 }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isLandscape, setIsLandscape] = useState(
-    typeof window !== 'undefined' ? window.innerWidth > window.innerHeight : false
-  );
+  const orientationInfo = useOrientation();
 
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
     };
-    const handleOrientation = () => {
-      setIsLandscape(window.innerWidth > window.innerHeight);
-    };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
-    window.addEventListener('resize', handleOrientation);
-    window.addEventListener('orientationchange', handleOrientation);
     return () => {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      window.removeEventListener('resize', handleOrientation);
-      window.removeEventListener('orientationchange', handleOrientation);
     };
   }, []);
 
-  const toggleOrientation = async () => {
+  const cycleOrientationMode = async () => {
+    const currentMode = config.orientationMode || 'auto';
+    let nextMode: 'auto' | 'landscape' | 'portrait' = 'auto';
+    if (currentMode === 'auto') {
+      nextMode = orientationInfo.isLandscape ? 'portrait' : 'landscape';
+    } else if (currentMode === 'landscape') {
+      nextMode = 'portrait';
+    } else {
+      nextMode = 'auto';
+    }
+    onUpdateConfig({ orientationMode: nextMode });
+
+    // Optional browser screen orientation lock if supported
     if (typeof screen !== 'undefined' && screen.orientation) {
       try {
-        if (!isLandscape) {
+        if (nextMode === 'landscape' && typeof (screen.orientation as any).lock === 'function') {
           if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
             await document.documentElement.requestFullscreen().catch(() => {});
           }
-          if (typeof (screen.orientation as any).lock === 'function') {
-            await (screen.orientation as any).lock('landscape');
+          await (screen.orientation as any).lock('landscape').catch(() => {});
+        } else if (nextMode === 'portrait' && typeof (screen.orientation as any).lock === 'function') {
+          if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+            await document.documentElement.requestFullscreen().catch(() => {});
           }
-        } else {
-          if (typeof (screen.orientation as any).unlock === 'function') {
-            (screen.orientation as any).unlock();
-          }
+          await (screen.orientation as any).lock('portrait').catch(() => {});
+        } else if (typeof (screen.orientation as any).unlock === 'function') {
+          (screen.orientation as any).unlock();
         }
       } catch (err) {
-        console.warn('Screen orientation lock/unlock fallback:', err);
+        console.warn('Screen orientation lock fallback:', err);
       }
     }
   };
@@ -188,13 +197,23 @@ export default function ControlsHud({
                <RotateCcw size={16} />
              </button>
              <button 
-               onClick={toggleOrientation} 
-               className="p-2 flex-1 sm:flex-none justify-center flex items-center gap-1.5 bg-[#1E2030] hover:bg-gray-700 rounded-lg text-gray-300 text-xs" 
-               title={isLandscape ? 'Orientação: Horizontal (Detectada pelo aparelho)' : 'Orientação: Vertical (Detectada pelo aparelho)'}
-             >
-               <Smartphone size={16} className={`transition-transform duration-300 ${isLandscape ? 'rotate-90 text-amber-400' : ''}`} />
-               <span className="hidden md:inline">{isLandscape ? 'Horizontal' : 'Vertical'}</span>
-             </button>
+                onClick={cycleOrientationMode} 
+                className={`p-2 flex-1 sm:flex-none justify-center flex items-center gap-1.5 rounded-lg text-xs transition-colors ${
+                  config.orientationMode && config.orientationMode !== 'auto'
+                    ? 'bg-amber-950/80 border border-amber-500/80 text-amber-300'
+                    : 'bg-[#1E2030] hover:bg-gray-700 text-gray-300'
+                }`} 
+                title={`Orientação: ${config.orientationMode === 'portrait' ? 'Fixo Vertical' : config.orientationMode === 'landscape' ? 'Fixo Horizontal' : 'Automático'} (Detectado: ${orientationInfo.isLandscape ? 'Horizontal' : 'Vertical'}). Clique para alternar.`}
+              >
+                <Smartphone size={16} className={`transition-transform duration-300 ${orientationInfo.isLandscape ? 'rotate-90 text-amber-400' : 'text-amber-400'}`} />
+                <span className="hidden sm:inline">
+                  {config.orientationMode === 'portrait'
+                    ? 'Fixo: Vertical'
+                    : config.orientationMode === 'landscape'
+                    ? 'Fixo: Horizontal'
+                    : `Auto: ${orientationInfo.isLandscape ? 'Horizontal' : 'Vertical'}`}
+                </span>
+              </button>
              <button onClick={handlePiP} className="p-2 flex-1 sm:flex-none justify-center flex bg-[#1E2030] hover:bg-gray-700 rounded-lg text-gray-300" title="Picture in Picture" ><MonitorOff size={18}/></button>
              <button onClick={toggleFullscreen} className="p-2 flex-1 sm:flex-none justify-center flex bg-[#1E2030] hover:bg-gray-700 rounded-lg text-gray-300" title="Fullscreen" >{isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}</button>
              <button onClick={onClose} className="p-2 flex-1 sm:flex-none justify-center flex bg-red-900/50 hover:bg-red-500 rounded-lg text-red-200" title="Fechar Prompter" ><X size={18} /></button>
@@ -310,6 +329,18 @@ export default function ControlsHud({
                 <span>Atalhos & Pedais</span>
               </button>
             )}
+
+            {/* Install App on Tablet / Mobile */}
+            {!isPWAInstalled && onOpenInstallGuide && (
+              <button
+                onClick={onOpenInstallGuide}
+                className="px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 rounded-lg text-xs font-semibold text-amber-400 flex items-center gap-1.5 transition-colors shadow-sm"
+                title="Baixar aplicativo para Tablet ou Celular (Tela Cheia sem barras)"
+              >
+                <Download size={14} />
+                <span>Baixar App (Tablet/Mobile)</span>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
@@ -380,6 +411,29 @@ export default function ControlsHud({
                <option value="single">Coluna Única</option>
                <option value="double">Coluna Dupla (Side-by-side)</option>
              </select>
+
+              <select 
+                value={config.orientationMode || 'auto'} 
+                onChange={e => onUpdateConfig({ orientationMode: e.target.value as any })}
+                className="bg-black text-sm text-gray-300 px-3 py-1.5 rounded-lg border border-gray-700 focus:outline-none"
+                title="Modo de reconhecimento de orientação de tela"
+              >
+                <option value="auto">Giro: Automático ({orientationInfo.isLandscape ? 'Horizontal' : 'Vertical'})</option>
+                <option value="landscape">Giro: Fixo Horizontal (16:9)</option>
+                <option value="portrait">Giro: Fixo Vertical (9:16)</option>
+              </select>
+
+              <select 
+                value={config.rotation || 0} 
+                onChange={e => onUpdateConfig({ rotation: Number(e.target.value) })}
+                className="bg-black text-sm text-gray-300 px-3 py-1.5 rounded-lg border border-gray-700 focus:outline-none"
+                title="Ângulo de rotação da tela / espelho"
+              >
+                <option value={0}>Rotação: 0° (Normal)</option>
+                <option value={90}>Rotação: 90°</option>
+                <option value={180}>Rotação: 180°</option>
+                <option value={270}>Rotação: 270°</option>
+              </select>
           </div>
         </div>
         

@@ -4,10 +4,13 @@ import Editor from './components/Editor';
 import ScriptManager from './components/ScriptManager';
 import PrompterView from './components/PrompterView';
 import RemoteControlPad from './components/RemoteControlPad';
-import { Terminal, FileText, Library, Play, Cloud, CloudOff, Keyboard, QrCode } from 'lucide-react';
+import { Terminal, FileText, Library, Play, Cloud, CloudOff, Keyboard, QrCode, Download } from 'lucide-react';
 import { scriptsApi } from './lib/supabase';
 import ShortcutsModal, { DEFAULT_KEY_BINDINGS } from './components/ShortcutsModal';
 import RemotePairModal from './components/RemotePairModal';
+import { usePWAInstall } from './hooks/usePWAInstall';
+import InstallAppBanner from './components/InstallAppBanner';
+import InstallGuideModal from './components/InstallGuideModal';
 
 const DEFAULT_CONFIG: PrompterConfig = {
   speed: 2,
@@ -24,6 +27,8 @@ const DEFAULT_CONFIG: PrompterConfig = {
   showProgressBar: true,
   showTimeRemaining: true,
   rotation: 0,
+  autoOrientation: true,
+  orientationMode: 'auto',
   countdownDuration: 3,
   cameraEnabled: false,
   cameraOpacity: 40,
@@ -77,6 +82,8 @@ export default function App() {
   });
 
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+  const pwaState = usePWAInstall();
+  const [isInstallGuideOpen, setIsInstallGuideOpen] = useState(false);
 
   const [scripts, setScripts] = useState<SavedScript[]>([]);
   const isOnline = false; // Armazenamento local ativo por padrão
@@ -339,6 +346,20 @@ export default function App() {
           >
             <Keyboard size={18} /> Atalhos & Pedais
           </button>
+
+          {!pwaState.isInstalled && (
+            <button
+              onClick={() => setIsInstallGuideOpen(true)}
+              className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-md transition-all text-sm font-semibold whitespace-nowrap bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 shadow-sm"
+              title={`Baixar aplicativo para ${pwaState.platformName}`}
+            >
+              <Download size={18} />
+              <span>Baixar App</span>
+              <span className="text-[10px] uppercase font-bold text-amber-300 bg-amber-400/20 px-1.5 py-0.5 rounded-full hidden sm:inline">
+                {pwaState.platformName}
+              </span>
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -354,6 +375,9 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* Screen notice to download / install app on mobile and tablet */}
+      <InstallAppBanner pwaState={pwaState} className="mx-2 sm:mx-4 mt-2.5 mb-1" />
 
       <main className="flex-1 overflow-hidden flex relative">
         {activeTab === 'editor' ? (
@@ -391,6 +415,13 @@ export default function App() {
         onTogglePedal={(enabled) => {
           updateConfig({ pedalShortcutsEnabled: enabled });
         }}
+      />
+
+      {/* Visual Install Guide Modal for Mobile, Tablet & Desktop */}
+      <InstallGuideModal
+        isOpen={isInstallGuideOpen}
+        onClose={() => setIsInstallGuideOpen(false)}
+        pwaState={pwaState}
       />
     </div>
   );

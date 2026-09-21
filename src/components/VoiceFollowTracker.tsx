@@ -22,6 +22,10 @@ export default function VoiceFollowTracker({
   const recognitionRef = useRef<any>(null);
   const linesRef = useRef<string[]>([]);
   const currentMatchLineRef = useRef<number>(0);
+  const isEnabledRef = useRef<boolean>(isEnabled);
+  isEnabledRef.current = isEnabled;
+  const isStoppingRef = useRef<boolean>(false);
+  const restartTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Pre-process script lines and clean markers
   useEffect(() => {
@@ -32,9 +36,16 @@ export default function VoiceFollowTracker({
 
   useEffect(() => {
     if (!isEnabled) {
+      isStoppingRef.current = true;
+      if (restartTimerRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
       stopListening();
       return;
     }
+
+    isStoppingRef.current = false;
 
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -43,103 +54,150 @@ export default function VoiceFollowTracker({
       return;
     }
 
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'pt-BR';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
+    const initRecognition = () => {
+      if (isStoppingRef.current || !isEnabledRef.current) return;
 
-    recognition.onstart = () => {
-      setIsListening(true);
-      setErrorMsg(null);
-    };
-
-    recognition.onerror = (event: any) => {
-      console.warn('Speech recognition error:', event.error);
-      if (event.error === 'not-allowed') {
-        setErrorMsg('Microfone não autorizado.');
-        onToggleVoice(false);
-      }
-    };
-
-    recognition.onend = () => {
-      // Auto-restart if still enabled
-      if (isEnabled && recognitionRef.current) {
-        try {
-          recognition.start();
-        } catch {
-          setIsListening(false);
+      try {
+        if (recognitionRef.current) {
+          recognitionRef.current.onend = null;
+          recognitionRef.current.onerror = null;
+          try { recognitionRef.current.abort(); } catch {}
+          recognitionRef.current = null;
         }
-      } else {
-        setIsListening(false);
-      }
-    };
 
-    recognition.onresult = (event: any) => {
-      let interimTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          interimTranscript = transcript;
-        } else {
-          interimTranscript += transcript;
-        }
-      }
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'pt-BR';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.maxAlternatives = 1;
 
-      const spoken = interimTranscript.toLowerCase().trim();
-      setLastTranscript(spoken);
+        recognition.onstart = () => {
+          setIsListening(true);
+          setErrorMsg(null);
+        };
 
-      if (!spoken) return;
-
-      // Match spoken tokens with script lines
-      const spokenWords = spoken.split(/\s+/).filter(w => w.length > 2);
-      if (spokenWords.length === 0) return;
-
-      const lines = linesRef.current;
-      const startScan = Math.max(0, currentMatchLineRef.current - 2);
-      const endScan = Math.min(lines.length, currentMatchLineRef.current + 12);
-
-      let bestLine = -1;
-      let highestMatches = 0;
-
-      for (let idx = startScan; idx < endScan; idx++) {
-        const lineText = lines[idx];
-        if (!lineText) continue;
-
-        let matches = 0;
-        for (const word of spokenWords) {
-          if (lineText.includes(word)) {
-            matches++;
+        recognition.onerror = (event: any) => {
+          console.warn('Speech recognition error:', event.error);
+          if (event.error === 'not-allowed') {
+            setErrorMsg('Microfone não autorizado no navegador.');
+            onToggleVoice(false);
+          } else if (event.error === 'audio-capture') {
+            setErrorMsg('Microfone ocupado. Reconectando...');
+          } else if (event.error === 'network') {
+            setErrorMsg('Reconectando serviço de voz...');
           }
-        }
+        };
 
-        if (matches > highestMatches) {
-          highestMatches = matches;
-          bestLine = idx;
-        }
-      }
+        recognition.onend = () => {
+          if (isStoppingRef.current || !isEnabledRef.current) {
+            setIsListening(false);
+            return;
+          }
 
-      if (bestLine >= 0 && highestMatches >= 1) {
-        currentMatchLineRef.current = bestLine;
-        onJumpToLine(bestLine);
+          // Auto-recover and restart smoothly with slight debounce
+          if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+          restartTimerRef.current = setTimeout(() => {
+            if (isEnabledRef.current && !isStoppingRef.current) {
+              try {
+                recognition.start();
+                setIsListening(true);
+              } catch (startErr: any) {
+                // If recognition instance is dead or invalid state, re-init
+                if (startErr.name !== 'InvalidStateError') {
+                  restartTimerRef.current = setTimeout(() => {
+                    if (isEnabledRef.current && !isStoppingRef.current) {
+                      initRecognition();
+                    }
+                  }, 800);
+                }
+              }
+            }
+          }, 150);
+        };
+
+        recognition.onresult = (event: any) => {
+          let interimTranscript = '';
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              interimTranscript = transcript;
+            } else {
+              interimTranscript += transcript;
+            }
+          }
+
+          const spoken = interimTranscript.toLowerCase().trim();
+          setLastTranscript(spoken);
+
+          if (!spoken) return;
+
+          // Match spoken tokens with script lines
+          const spokenWords = spoken.split(/\s+/).filter(w => w.length > 2);
+          if (spokenWords.length === 0) return;
+
+          const lines = linesRef.current;
+          const startScan = Math.max(0, currentMatchLineRef.current - 2);
+          const endScan = Math.min(lines.length, currentMatchLineRef.current + 12);
+
+          let bestLine = -1;
+          let highestMatches = 0;
+
+          for (let idx = startScan; idx < endScan; idx++) {
+            const lineText = lines[idx];
+            if (!lineText) continue;
+
+            let matches = 0;
+            for (const word of spokenWords) {
+              if (lineText.includes(word)) {
+                matches++;
+              }
+            }
+
+            if (matches > highestMatches) {
+              highestMatches = matches;
+              bestLine = idx;
+            }
+          }
+
+          if (bestLine >= 0 && highestMatches >= 1) {
+            currentMatchLineRef.current = bestLine;
+            onJumpToLine(bestLine);
+          }
+        };
+
+        recognition.start();
+        recognitionRef.current = recognition;
+      } catch (e) {
+        console.warn('Recognition start err:', e);
+        if (isEnabledRef.current && !isStoppingRef.current) {
+          restartTimerRef.current = setTimeout(() => {
+            initRecognition();
+          }, 1000);
+        }
       }
     };
 
-    try {
-      recognition.start();
-      recognitionRef.current = recognition;
-    } catch (e) {
-      console.warn('Recognition start err:', e);
-    }
+    initRecognition();
 
     return () => {
+      isStoppingRef.current = true;
+      if (restartTimerRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
       stopListening();
     };
   }, [isEnabled]);
 
   const stopListening = () => {
+    isStoppingRef.current = true;
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
     if (recognitionRef.current) {
       recognitionRef.current.onend = null;
+      recognitionRef.current.onerror = null;
       try {
         recognitionRef.current.stop();
       } catch {
