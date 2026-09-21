@@ -1,4 +1,9 @@
 {
   "name": "Teleprompter",
-  "description": "Awaiting further instructions for the system upgrade."
+  "description": "Teleprompter profissional com controle de velocidade, temas e assistência de IA para roteiros.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

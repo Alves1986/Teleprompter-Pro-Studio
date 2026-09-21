@@ -19,6 +19,39 @@ export interface PrompterConfig {
   highlightCurrentLine: boolean;
   showProgressBar: boolean;
   showTimeRemaining: boolean;
+  rotation?: number;
+  // Novos recursos avançados de estúdio
+  countdownDuration: number; // 0, 3, 5, 10 segundos
+  cameraEnabled: boolean;
+  cameraOpacity: number; // 10 a 100%
+  voiceFollowEnabled: boolean;
+  targetMinutes: number; // meta de tempo em minutos (0 = livre)
+  pedalShortcutsEnabled: boolean;
+  // Mapeamento de teclas e comandos de pedal
+  customKeyBindings?: CustomKeyBindings;
+}
+
+export interface CustomKeyBindings {
+  playPause: string[];      // ex: ['Space', 'KeyK', 'Numpad0']
+  speedUp: string[];        // ex: ['ArrowUp', 'PageUp']
+  speedDown: string[];      // ex: ['ArrowDown', 'PageDown']
+  fontSizeUp?: string[];    // ex: ['BracketRight']
+  fontSizeDown?: string[];  // ex: ['BracketLeft']
+  rewind?: string[];        // ex: ['ArrowLeft']
+  fastForward?: string[];   // ex: ['ArrowRight']
+  restart?: string[];       // ex: ['KeyR']
+  pedalPlayButton?: number; // índice do botão Gamepad (padrão: 0)
+  pedalSpeedUpButton?: number; // índice do botão Gamepad (padrão: 12)
+  pedalSpeedDownButton?: number; // índice do botão Gamepad (padrão: 13)
+}
+
+export interface ScriptBlock {
+  id: string;
+  title: string;
+  content: string;
+  lineIndex: number;
+  wordCount: number;
+  estimatedSeconds: number;
 }
 
 export interface TextStats {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { SavedScript } from '../types';
-import { FileText, Plus, Trash2, Clock, Upload, Loader2 } from 'lucide-react';
+import { FileText, Plus, Trash2, Clock, Upload, Download, Loader2 } from 'lucide-react';
 import { scriptsApi } from '../lib/supabase';
 
 interface Props {
@@ -58,11 +58,40 @@ export default function ScriptManager({ scripts, setScripts, onSelect, currentId
     setIsProcessing(true);
     reader.onload = async (ev) => {
       try {
-        const content = ev.target?.result as string;
+        const rawContent = ev.target?.result as string;
+        
+        // Se for arquivo JSON, pode ser backup completo ou roteiro único
+        if (file.name.endsWith('.json')) {
+          try {
+            const parsed = JSON.parse(rawContent);
+            if (Array.isArray(parsed)) {
+              for (const item of parsed) {
+                if (item.title && item.content !== undefined) {
+                  await scriptsApi.upsert(item);
+                }
+              }
+              const all = await scriptsApi.getAll();
+              setScripts(all);
+              alert(`${parsed.length} roteiros importados com sucesso!`);
+              return;
+            } else if (parsed.content !== undefined) {
+              const saved = await scriptsApi.upsert(parsed);
+              setScripts(prev => [saved, ...prev]);
+              onSelect(saved);
+              return;
+            }
+          } catch {
+            // Continua como texto comum
+          }
+        }
+
+        // Limpa possíveis tags XML de arquivos exportados
+        const cleanContent = rawContent.replace(/<[^>]+>/g, '').trim();
+
         const newScript: SavedScript = {
           id: Math.random().toString(36).substring(7),
-          title: file.name.replace('.txt', ''),
-          content,
+          title: file.name.replace(/\.[^/.]+$/, ''),
+          content: cleanContent,
           lastModified: Date.now()
         };
         
@@ -72,7 +101,7 @@ export default function ScriptManager({ scripts, setScripts, onSelect, currentId
         onSelect(saved);
       } catch (err) {
         console.error('Erro ao importar:', err);
-        alert('Erro na importação local.');
+        alert('Erro na importação do arquivo.');
       } finally {
         setIsProcessing(false);
       }
@@ -80,17 +109,35 @@ export default function ScriptManager({ scripts, setScripts, onSelect, currentId
     reader.readAsText(file);
   };
 
+  const handleExportBackup = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(scripts, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", `teleprompter-backup-${new Date().toISOString().slice(0, 10)}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  };
+
   return (
     <div className="max-w-[1600px] mx-auto w-full p-4 sm:p-8 flex flex-col h-full">
       <div className="flex items-center justify-between mb-8">
         <h2 className="text-2xl font-display font-bold text-white">Biblioteca de Roteiros</h2>
-        <div className="flex gap-3">
-          <label className="bg-[#1E2030] hover:bg-gray-800 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 cursor-pointer transition-colors border border-gray-700">
-            <Upload size={18} /> Importar .TXT
-            <input type="file" accept=".txt" onChange={handleImport} className="hidden" />
+        <div className="flex flex-wrap gap-2 sm:gap-3">
+          <label className="bg-[#1E2030] hover:bg-gray-800 text-white px-3.5 py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center gap-2 cursor-pointer transition-colors border border-gray-700">
+            <Upload size={16} /> Importar Roteiro
+            <input type="file" accept=".txt,.md,.json,.doc,.docx" onChange={handleImport} className="hidden" />
           </label>
-          <button onClick={createNew} className="bg-amber-600 hover:bg-amber-500 text-black px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors">
-            <Plus size={18} /> Criar Novo
+          <button 
+            onClick={handleExportBackup} 
+            disabled={scripts.length === 0}
+            className="bg-[#1E2030] hover:bg-gray-800 text-gray-300 hover:text-white px-3.5 py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center gap-2 transition-colors border border-gray-700 disabled:opacity-40"
+            title="Exportar todos os roteiros em JSON"
+          >
+            <Download size={16} /> Backup JSON
+          </button>
+          <button onClick={createNew} disabled={isProcessing} className="bg-amber-600 hover:bg-amber-500 text-black px-4 py-2 rounded-lg text-xs sm:text-sm font-bold flex items-center gap-2 transition-colors disabled:opacity-50">
+            {isProcessing ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} Criar Novo
           </button>
         </div>
       </div>

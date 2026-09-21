@@ -1,29 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI } from '@google/genai';
 import { SavedScript } from '../types';
 import { calculateStats } from '../utils';
 import { Printer, Pause, Quote, BarChart2, Info, Flag, AlertCircle, Sparkles, Loader2, X, Check, Save } from 'lucide-react';
 import { scriptsApi } from '../lib/supabase';
-
-const getAiClient = () => {
-  // O Vite resolve o VITE_ statically, e o AI Studio injeta no process.env para seu preview interno
-  let apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  
-  if (!apiKey && typeof process !== 'undefined' && process.env) {
-    apiKey = process.env.GEMINI_API_KEY;
-  }
-
-  if (!apiKey || apiKey.trim() === '') {
-    return null;
-  }
-
-  try {
-    return new GoogleGenAI({ apiKey });
-  } catch (e) {
-    console.error('Falha ao inicializar GoogleGenAI:', e);
-    return null;
-  }
-};
 
 interface Props {
   script: SavedScript;
@@ -39,7 +18,7 @@ export default function Editor({ script, onChange }: Props) {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const stats = calculateStats(script.content);
   
-  const saveTimeoutRef = useRef<NodeJS.Timeout>(null);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Auto-Save Local com Debounce
   useEffect(() => {
@@ -65,41 +44,27 @@ export default function Editor({ script, onChange }: Props) {
   }, [script.content, script.title]);
 
   const handleAiAction = async (type: 'improve' | 'summarize' | 'generate') => {
-    const aiClient = getAiClient();
-    if (!aiClient) {
-      alert('IA não configurada no Vercel. Adicione VITE_GEMINI_API_KEY nas variáveis de ambiente.');
-      return;
-    }
-
     setIsAiLoading(true);
     try {
-      let prompt = "";
-      if (type === 'improve') {
-        prompt = `Aja como um redator profissional de TV. Melhore o texto deste roteiro de teleprompter para garantir uma fluidez perfeita de fala, corrigindo erros e melhorando o ritmo.
-Importante: Conserve quaisquer marcadores especiais presentes, como [PAUSA], [CUE: ...], [NOTA: ...], [ÊNFASE: ...].
-Roteiro original:
-${script.content}`;
-      } else if (type === 'summarize') {
-        prompt = `Resuma este roteiro de teleprompter para deixá-lo mais dinâmico e rápido de ler.
-Corte redundâncias, mas mantenha o sentido original e marcadores como [PAUSA].
-Roteiro original:
-${script.content}`;
-      } else {
-        prompt = `Crie um roteiro rápido para teleprompter sobre o seguinte tópico: "${aiPrompt}".
-Inclua, de forma inteligente, alguns marcadores de formatação como [PAUSA] para indicar respiros, [ÊNFASE: palavra] para destaques, e [CUE: câmera/ação] se necessário.
-Retorne apenas o texto do roteiro pronto.`;
+      const response = await fetch('/api/ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type,
+          content: script.content,
+          promptText: aiPrompt,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Erro ao processar com a IA.');
       }
 
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt
-      });
-      
-      const newContent = response.text || '';
-      setAiPreview(newContent);
-    } catch (err) {
+      setAiPreview(data.text || '');
+    } catch (err: any) {
       console.error(err);
-      alert('Houve um erro ao processar com a IA.');
+      alert(err.message || 'Houve um erro ao processar com a IA.');
     } finally {
       setIsAiLoading(false);
       setAiPrompt("");
@@ -213,7 +178,7 @@ Retorne apenas o texto do roteiro pronto.`;
         </div>
         <div className="flex items-center gap-2 overflow-x-auto pb-2 xl:pb-0 hide-scrollbar justify-start xl:justify-end w-full whitespace-nowrap border-t border-gray-800 xl:border-none pt-2 xl:pt-0">
            <button onClick={() => setShowAiModal(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600 hover:text-white rounded text-sm font-bold transition-colors shrink-0">
-            <Sparkles size={16} /> IA Gemma 4
+            <Sparkles size={16} /> Assistente IA
           </button>
            <button onClick={() => setShowStats(!showStats)} className="flex items-center gap-1.5 px-3 py-1.5 text-gray-400 hover:text-white rounded text-sm transition-colors shrink-0">
             <BarChart2 size={16} /> Estatísticas
@@ -231,7 +196,7 @@ Retorne apenas o texto do roteiro pronto.`;
           </button>
           <div className="flex items-center gap-2 mb-4">
             <Sparkles className="text-indigo-400" size={20} />
-            <h3 className="text-lg font-bold text-indigo-100">Assistente IA (Gemma 4)</h3>
+            <h3 className="text-lg font-bold text-indigo-100">Assistente IA</h3>
           </div>
           
           <div className="flex flex-col gap-4">

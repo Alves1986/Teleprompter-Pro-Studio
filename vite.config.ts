@@ -24,7 +24,7 @@ export default defineConfig({
         theme_color: '#1E2030',
         background_color: '#0A0A0F',
         display: 'standalone',
-        orientation: 'portrait',
+        orientation: 'any',
         icons: [
           {
             src: '/pwa-icon.svg',
@@ -48,6 +48,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 3000
+    port: 3000,
+    allowedHosts: true
   }
 });
