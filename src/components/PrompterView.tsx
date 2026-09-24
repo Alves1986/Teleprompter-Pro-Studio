@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { PrompterConfig, AppTheme, SavedScript, Bookmark } from '../types';
+import { PrompterConfig, AppTheme, SavedScript, Bookmark, ConnectedMobileDevice } from '../types';
 import ControlsHud from './ControlsHud';
 import CountdownOverlay from './CountdownOverlay';
 import EscaletaDrawer from './EscaletaDrawer';
@@ -7,12 +7,14 @@ import CameraRecorder from './CameraRecorder';
 import VoiceFollowTracker from './VoiceFollowTracker';
 import RemotePairModal from './RemotePairModal';
 import ShortcutsModal, { DEFAULT_KEY_BINDINGS } from './ShortcutsModal';
+import BluetoothVerifierModal from './BluetoothVerifierModal';
 import { Pause, Play, Smartphone, ListOrdered, Clock, Download, X, ArrowLeft } from 'lucide-react';
 import { parseScriptBlocks, formatTime } from '../utils';
 import { useOrientation } from '../hooks/useOrientation';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import InstallGuideModal from './InstallGuideModal';
-import { RemoteClient } from '../services/remoteService';
+import RemoteLatencyIndicator from './RemoteLatencyIndicator';
+import { RemoteClient, RemoteStatus } from '../services/remoteService';
 
 interface Props {
   script: SavedScript;
@@ -62,8 +64,11 @@ export default function PrompterView({
   const [isEscaletaOpen, setIsEscaletaOpen] = useState(false);
   const [isRemoteModalOpen, setIsRemoteModalOpen] = useState(false);
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
+  const [isBluetoothVerifierOpen, setIsBluetoothVerifierOpen] = useState(false);
+  const [connectedMobileDevices, setConnectedMobileDevices] = useState<ConnectedMobileDevice[]>([]);
   const [isCameraActive, setIsCameraActive] = useState(config.cameraEnabled || false);
   const [cameraOpacity, setCameraOpacity] = useState(config.cameraOpacity || 35);
+  const [isCameraRecording, setIsCameraRecording] = useState(false);
   const [isVoiceFollowActive, setIsVoiceFollowActive] = useState(config.voiceFollowEnabled || false);
   const [activeLineIndex, setActiveLineIndex] = useState(0);
 
@@ -96,7 +101,13 @@ export default function PrompterView({
     sessionStorage.setItem('tp_room_code', newCode);
   };
   const [controllersCount, setControllersCount] = useState(0);
+  const [remoteStatus, setRemoteStatus] = useState<RemoteStatus | null>(null);
   const remoteClientRef = useRef<RemoteClient | null>(null);
+
+  // Speech cadence tracking refs for real-time speed matching
+  const voiceCadenceRatioRef = useRef<number>(1.0);
+  const smoothedCadenceRatioRef = useRef<number>(1.0);
+  const liveCadenceWpmRef = useRef<number>(130);
 
   // Real-time automatic screen orientation detection (vertical vs horizontal)
   const orientationInfo = useOrientation();
@@ -263,8 +274,40 @@ export default function PrompterView({
           jumpToLine(payload.lineIndex);
         }
         break;
+      case 'toggle_voice': {
+        const next = typeof payload?.enabled === 'boolean' ? payload.enabled : !isVoiceFollowActiveRef.current;
+        setIsVoiceFollowActive(next);
+        onUpdateConfigRef.current({ voiceFollowEnabled: next });
+        break;
+      }
+      case 'toggle_camera': {
+        const next = typeof payload?.enabled === 'boolean' ? payload.enabled : !isCameraActive;
+        setIsCameraActive(next);
+        onUpdateConfigRef.current({ cameraEnabled: next });
+        break;
+      }
       case 'request_sync':
         syncStateToRemote();
+        break;
+      case 'device_status_update':
+        if (payload) {
+          setConnectedMobileDevices(prev => {
+            const devId = payload.id || 'mobile_device';
+            const existing = prev.filter(d => d.id !== devId);
+            return [{
+              id: devId,
+              name: payload.name || 'Celular Remoto',
+              deviceType: payload.deviceType || 'mobile',
+              os: payload.os || 'Desconhecido',
+              browser: payload.browser,
+              connectedAt: payload.connectedAt || Date.now(),
+              lastSeen: Date.now(),
+              bluetoothConnected: Boolean(payload.bluetoothConnected),
+              bluetoothDevices: payload.bluetoothDevices || [],
+              lastSignal: payload.lastSignal
+            }, ...existing];
+          });
+        }
         break;
     }
   }, [triggerTogglePlay, syncStateToRemote]);
@@ -280,6 +323,7 @@ export default function PrompterView({
       },
       onStatus: (status) => {
         setControllersCount(status.controllersCount);
+        setRemoteStatus(status);
       }
     });
 
@@ -391,10 +435,25 @@ export default function PrompterView({
     return closestLine;
   }, [script.content]);
 
-  // Voice progress handler from VoiceFollowTracker
-  const handleVoiceProgress = useCallback((data: { lineIndex: number; wordFraction: number; isSpeaking: boolean; transcript: string }) => {
+  // Voice progress handler from VoiceFollowTracker with real-time speech cadence
+  const handleVoiceProgress = useCallback((data: { 
+    lineIndex: number; 
+    wordFraction: number; 
+    isSpeaking: boolean; 
+    transcript: string;
+    cadenceWpm?: number;
+    cadenceRatio?: number;
+    cadenceQuality?: 'slow' | 'normal' | 'fast';
+  }) => {
     setActiveLineIndex(data.lineIndex);
     isVoiceSpeakingRef.current = data.isSpeaking;
+
+    if (typeof data.cadenceRatio === 'number') {
+      voiceCadenceRatioRef.current = data.cadenceRatio;
+    }
+    if (typeof data.cadenceWpm === 'number') {
+      liveCadenceWpmRef.current = data.cadenceWpm;
+    }
 
     if (data.isSpeaking) {
       lastVoiceTimeRef.current = performance.now();
@@ -405,6 +464,47 @@ export default function PrompterView({
     }
   }, [getLineScrollPosition]);
 
+  // Voice direct commands dispatcher (pausar, continuar, velocidade, reiniciar)
+  const handleVoiceCommand = useCallback((cmd: 'play' | 'pause' | 'speed_up' | 'speed_down' | 'restart') => {
+    switch (cmd) {
+      case 'pause':
+        setIsPlaying(false);
+        setShowCountdown(false);
+        syncStateToRemote({ isPlaying: false });
+        break;
+      case 'play':
+        setIsPlaying(true);
+        syncStateToRemote({ isPlaying: true });
+        break;
+      case 'speed_up': {
+        const nextSpeed = Math.min(10, +(configRef.current.speed + 0.5).toFixed(1));
+        onUpdateConfigRef.current({ speed: nextSpeed });
+        syncStateToRemote({ speed: nextSpeed });
+        break;
+      }
+      case 'speed_down': {
+        const nextSpeed = Math.max(0.5, +(configRef.current.speed - 0.5).toFixed(1));
+        onUpdateConfigRef.current({ speed: nextSpeed });
+        syncStateToRemote({ speed: nextSpeed });
+        break;
+      }
+      case 'restart':
+        if (scrollRef.current) scrollRef.current.scrollTop = 0;
+        voiceTargetScrollRef.current = 0;
+        setActiveLineIndex(0);
+        setProgress(0);
+        syncStateToRemote({ isPlaying: false, progressPercent: 0 });
+        break;
+    }
+  }, [syncStateToRemote]);
+
+  // When Voice Follow is engaged, initialize target anchor at current scroll position
+  useEffect(() => {
+    if (isVoiceFollowActive && scrollRef.current) {
+      voiceTargetScrollRef.current = scrollRef.current.scrollTop;
+    }
+  }, [isVoiceFollowActive]);
+
   // Content Renderer with visual cue markers and per-line DOM anchors
   const renderContent = (content: string) => {
     const lines = content.split('\n');
@@ -412,33 +512,38 @@ export default function PrompterView({
       if (!line.trim()) {
         return <div key={i} id={`prompter-line-${i}`} data-line-idx={i} className="h-6" />;
       }
-      const parts = line.split(/(\[PAUSA\]|\[ÊNFASE:[^\]]+\]|\[CUE:[^\]]+\]|\[NOTA:[^\]]+\]|\[BLOCO:[^\]]+\])/g);
+      const parts = line.split(/(\[(?:PAUSA|ÊNFASE|ENFASE|CUE|NOTA|BLOCO|SEÇÃO|SECAO|SEGMENTO)(?::[^\]]+)?\])/gi);
       
       const renderedParts = parts.map((part, j) => {
-        if (part === '[PAUSA]') {
+        const upper = part.toUpperCase();
+        if (upper === '[PAUSA]') {
           return (
             <div key={j} className="my-10 border-t border-amber-500 flex justify-center">
               <Pause className="w-8 h-8 text-amber-500 -mt-4 bg-inherit px-2" />
             </div>
           );
         }
-        if (part.startsWith('[ÊNFASE:')) {
-          return <strong key={j} className="text-amber-500 font-bold">{part.slice(8, -1)}</strong>;
+        if (upper.startsWith('[ÊNFASE:') || upper.startsWith('[ENFASE:')) {
+          const colonIdx = part.indexOf(':');
+          return <strong key={j} className="text-amber-400 font-bold">{part.slice(colonIdx + 1, -1).trim()}</strong>;
         }
-        if (part.startsWith('[CUE:')) {
+        if (upper.startsWith('[CUE:')) {
+          const colonIdx = part.indexOf(':');
           return (
             <div key={j} className="float-right clear-right bg-blue-900/40 text-blue-300 p-3 rounded-lg text-sm w-64 ml-8 mb-4 border border-blue-500 shadow-xl" style={{fontSize: 'max(14px, 0.4em)'}}>
-              {part.slice(5, -1)}
+              {part.slice(colonIdx + 1, -1).trim()}
             </div>
           );
         }
-        if (part.startsWith('[NOTA:')) {
-          return <span key={j} className="text-gray-500 italic block my-4" style={{fontSize: 'max(16px, 0.6em)'}}>{part.slice(6, -1)}</span>;
+        if (upper.startsWith('[NOTA:')) {
+          const colonIdx = part.indexOf(':');
+          return <span key={j} className="text-gray-500 italic block my-4" style={{fontSize: 'max(16px, 0.6em)'}}>{part.slice(colonIdx + 1, -1).trim()}</span>;
         }
-        if (part.startsWith('[BLOCO:')) {
+        if (upper.startsWith('[BLOCO:') || upper.startsWith('[SEÇÃO:') || upper.startsWith('[SECAO:') || upper.startsWith('[SEGMENTO:')) {
+          const colonIdx = part.indexOf(':');
           return (
             <div key={j} className="my-6 border-l-4 border-amber-500 pl-3 py-1 bg-amber-500/10 text-amber-400 font-bold text-sm tracking-wider uppercase">
-              {part.slice(7, -1)}
+              {part.slice(colonIdx + 1, -1).trim()}
             </div>
           );
         }
@@ -482,26 +587,44 @@ export default function PrompterView({
       const delta = Math.min(100, time - lastTimeRef.current);
       const isVoiceActive = isVoiceFollowActiveRef.current;
       const voiceTarget = voiceTargetScrollRef.current;
-      const isRecentlySpeaking = (performance.now() - lastVoiceTimeRef.current) < 1800;
+      const isSpeakingNow = isVoiceSpeakingRef.current || (performance.now() - lastVoiceTimeRef.current) < 2200;
 
-      if (isVoiceActive && voiceTarget !== null) {
-        // Voice Follow actively governs the progress / scrolling
+      if (isVoiceActive) {
         const currentScroll = scrollRef.current.scrollTop;
-        const diff = voiceTarget - currentScroll;
-        const absDiff = Math.abs(diff);
 
-        if (absDiff > 1) {
-          // Dynamic smooth scroll interpolation to track spoken words smoothly
-          const speedMultiplier = absDiff > 400 ? 12 : absDiff > 150 ? 8 : 5;
-          const lerpStep = diff * Math.min(0.25, Math.max(0.04, (delta / 1000) * speedMultiplier));
-          scrollRef.current.scrollTop = currentScroll + lerpStep;
-        } else if (isRecentlySpeaking && isPlayingRef.current) {
-          // If actively speaking and play mode is also engaged, continue gentle forward roll
-          const scrollAmount = (configRef.current.speed * 16) * (delta / 1000);
-          scrollRef.current.scrollTop += scrollAmount;
+        // Smoothly interpolate speech cadence ratio (avoids sudden velocity jumps)
+        const targetCadence = voiceCadenceRatioRef.current;
+        const lerpCadenceFactor = Math.min(1.0, (delta / 1000) * 3.5);
+        smoothedCadenceRatioRef.current += (targetCadence - smoothedCadenceRatioRef.current) * lerpCadenceFactor;
+
+        // Dynamically match forward pace to detected real-time speech cadence
+        const baseSpeed = Math.max(1.5, configRef.current.speed || 2);
+        const cadenceSpeedMultiplier = smoothedCadenceRatioRef.current;
+        const matchedForwardPace = baseSpeed * cadenceSpeedMultiplier * 20;
+
+        if (voiceTarget !== null) {
+          const diff = voiceTarget - currentScroll;
+          const absDiff = Math.abs(diff);
+
+          if (absDiff > 4) {
+            // Dynamic smooth scroll interpolation to track spoken words smoothly
+            const speedMultiplier = absDiff > 500 ? 14 : absDiff > 200 ? 9 : absDiff > 60 ? 6 : 3.5;
+            const lerpStep = diff * Math.min(0.3, Math.max(0.05, (delta / 1000) * speedMultiplier));
+            scrollRef.current.scrollTop = currentScroll + lerpStep;
+          } else if (isSpeakingNow || isPlayingRef.current) {
+            // Continually advance text matching the detected speech cadence in real-time
+            const scrollAmount = matchedForwardPace * (delta / 1000);
+            scrollRef.current.scrollTop = currentScroll + scrollAmount;
+            voiceTargetScrollRef.current = scrollRef.current.scrollTop;
+          }
+        } else if (isSpeakingNow || isPlayingRef.current) {
+          // If voice active but no specific target yet, start rolling matched to speech rate
+          scrollRef.current.scrollTop = currentScroll + (matchedForwardPace * (delta / 1000));
         }
 
         updateScrollMetrics();
+        const approxLine = calculateActiveLineFromScroll();
+        setActiveLineIndex(approxLine);
       } else if (isPlayingRef.current) {
         // Standard linear auto-scroll when Voice Follow is not driving
         const scrollAmount = (configRef.current.speed * 20) * (delta / 1000);
@@ -717,10 +840,26 @@ export default function PrompterView({
         opacity={cameraOpacity}
         onToggleEnabled={(enabled) => setIsCameraActive(enabled)}
         onChangeOpacity={(op) => setCameraOpacity(op)}
+        isVoiceFollowActive={isVoiceFollowActive}
+        onRecordingChange={(recording) => {
+          setIsCameraRecording(recording);
+          if (recording) {
+            if (isVoiceFollowActiveRef.current && scrollRef.current) {
+              voiceTargetScrollRef.current = scrollRef.current.scrollTop;
+              lastVoiceTimeRef.current = performance.now();
+            } else if (!isPlayingRef.current) {
+              setIsPlaying(true);
+            }
+          } else {
+            if (isPlayingRef.current) {
+              setIsPlaying(false);
+            }
+          }
+        }}
       />
 
-      {/* Quick Top-Left Back / Close Button for Mobile & Desktop */}
-      <div className="absolute top-safe left-3 sm:left-6 z-40">
+      {/* Quick Top-Left Back / Close Button & Mobile Remote Latency Monitor */}
+      <div className="absolute top-safe left-3 sm:left-6 z-40 flex items-center gap-2">
         <button
           onClick={onClose}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/75 hover:bg-black/90 active:bg-red-950/80 text-gray-200 hover:text-white border border-gray-700/80 backdrop-blur-md shadow-2xl text-xs font-semibold transition-all touch-manipulation cursor-pointer active:scale-95"
@@ -730,6 +869,13 @@ export default function PrompterView({
           <span className="hidden sm:inline">Voltar ao Editor</span>
           <span className="sm:hidden">Sair</span>
         </button>
+
+        {/* Visual Signal Strength & Latency Monitor for Remote Mobile Pairing */}
+        <RemoteLatencyIndicator
+          status={remoteStatus}
+          controllersCount={controllersCount}
+          onOpenVerifier={() => setIsBluetoothVerifierOpen(true)}
+        />
       </div>
 
       {/* Live Recording Pulsing Studio Badge */}
@@ -824,6 +970,8 @@ export default function PrompterView({
         scriptContent={script.content}
         currentLineIndex={activeLineIndex}
         onVoiceProgress={handleVoiceProgress}
+        onVoiceCommand={handleVoiceCommand}
+        isCameraRecording={isCameraRecording}
         onToggleVoice={(en) => {
           setIsVoiceFollowActive(en);
           onUpdateConfig({ voiceFollowEnabled: en });
@@ -925,6 +1073,7 @@ export default function PrompterView({
           sessionStorage.setItem('tp_room_code', newCode);
         }}
         controllersCount={controllersCount}
+        onOpenBluetoothVerifier={() => setIsBluetoothVerifierOpen(true)}
       />
 
       {/* Complete Controls HUD */}
@@ -950,6 +1099,9 @@ export default function PrompterView({
         onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
         onOpenInstallGuide={() => setIsInstallGuideOpen(true)}
         isPWAInstalled={pwaState.isInstalled}
+        onOpenBluetoothVerifier={() => setIsBluetoothVerifierOpen(true)}
+        isBluetoothConnected={connectedMobileDevices.some(d => d.bluetoothConnected)}
+        hasMobileConnected={controllersCount > 0 || connectedMobileDevices.length > 0}
       />
 
       {/* Keyboard & Bluetooth Pedal Mapping Modal */}
@@ -964,6 +1116,19 @@ export default function PrompterView({
         onTogglePedal={(enabled) => {
           onUpdateConfig({ pedalShortcutsEnabled: enabled });
         }}
+        onOpenBluetoothVerifier={() => setIsBluetoothVerifierOpen(true)}
+      />
+
+      {/* Bluetooth & Mobile Connection Verifier Modal */}
+      <BluetoothVerifierModal
+        isOpen={isBluetoothVerifierOpen}
+        onClose={() => setIsBluetoothVerifierOpen(false)}
+        roomCode={roomCode}
+        controllersCount={controllersCount}
+        connectedMobileDevices={connectedMobileDevices}
+        onOpenQrPair={() => setIsRemoteModalOpen(true)}
+        onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
+        onSendTestSignal={triggerTogglePlay}
       />
 
       {/* Install Guide Modal */}

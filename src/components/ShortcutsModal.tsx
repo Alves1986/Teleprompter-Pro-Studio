@@ -10,7 +10,8 @@ import {
   Play, 
   ChevronsUp, 
   ChevronsDown, 
-  Info 
+  Info,
+  Radio
 } from 'lucide-react';
 
 interface Props {
@@ -20,6 +21,7 @@ interface Props {
   onSaveBindings: (bindings: CustomKeyBindings) => void;
   pedalEnabled: boolean;
   onTogglePedal: (enabled: boolean) => void;
+  onOpenBluetoothVerifier?: () => void;
 }
 
 export const DEFAULT_KEY_BINDINGS: CustomKeyBindings = {
@@ -64,7 +66,8 @@ export default function ShortcutsModal({
   bindings,
   onSaveBindings,
   pedalEnabled,
-  onTogglePedal
+  onTogglePedal,
+  onOpenBluetoothVerifier
 }: Props) {
   const [currentBindings, setCurrentBindings] = useState<CustomKeyBindings>(() => ({
     ...DEFAULT_KEY_BINDINGS,
@@ -396,6 +399,25 @@ export default function ShortcutsModal({
               {lastGamepadPressed && (
                 <div className="text-[11px] text-amber-300/90 font-mono bg-amber-500/10 p-1.5 rounded border border-amber-500/20">
                   Último sinal recebido: <strong>Botão {lastGamepadPressed.button}</strong> de {lastGamepadPressed.id.slice(0, 24)}...
+                </div>
+              )}
+
+              {onOpenBluetoothVerifier && (
+                <div className="pt-2 border-t border-gray-800/80 flex items-center justify-between">
+                  <span className="text-[11px] text-gray-400">
+                    Deseja checar se o pedal está conectado ao celular ou testar botões?
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenBluetoothVerifier();
+                    }}
+                    className="px-2.5 py-1 bg-blue-600/30 hover:bg-blue-600/50 border border-blue-500/50 text-blue-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Radio size={13} className="text-blue-400" />
+                    <span>Abrir Verificador Bluetooth & Mobile</span>
+                  </button>
                 </div>
               )}
             </div>

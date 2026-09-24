@@ -7,13 +7,17 @@ interface Props {
   opacity: number;
   onToggleEnabled: (enabled: boolean) => void;
   onChangeOpacity: (opacity: number) => void;
+  onRecordingChange?: (isRecording: boolean) => void;
+  isVoiceFollowActive?: boolean;
 }
 
 export default function CameraRecorder({
   isEnabled,
   opacity,
   onToggleEnabled,
-  onChangeOpacity
+  onChangeOpacity,
+  onRecordingChange,
+  isVoiceFollowActive = false
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -23,7 +27,7 @@ export default function CameraRecorder({
 
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [recordWithMic, setRecordWithMic] = useState(false);
+  const [recordWithMic, setRecordWithMic] = useState(true);
   const [recordDuration, setRecordDuration] = useState(0);
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -99,10 +103,17 @@ export default function CameraRecorder({
     try {
       let recordingStream = mediaStreamRef.current;
 
-      // If user enabled audio recording, acquire mic audio for the recording take
+      // If user enabled audio recording, acquire mic audio with optimal voice constraints
       if (recordWithMic) {
         try {
-          const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const audioStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              channelCount: 1
+            }
+          });
           audioRecordStreamRef.current = audioStream;
           recordingStream = new MediaStream([
             ...mediaStreamRef.current.getVideoTracks(),
@@ -132,11 +143,18 @@ export default function CameraRecorder({
         const url = URL.createObjectURL(blob);
         setRecordedVideoUrl(url);
 
-        // Clean up temporary audio tracks
-        if (audioRecordStreamRef.current) {
-          audioRecordStreamRef.current.getTracks().forEach(t => t.stop());
-          audioRecordStreamRef.current = null;
+        // Notify speech recognition before cleaning up audio tracks
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('camera_recording_state', { detail: { isRecording: false } }));
         }
+
+        // Brief delay before stopping audio tracks to prevent sudden hardware cutoff in SpeechRecognition
+        setTimeout(() => {
+          if (audioRecordStreamRef.current) {
+            audioRecordStreamRef.current.getTracks().forEach(t => t.stop());
+            audioRecordStreamRef.current = null;
+          }
+        }, 150);
       };
 
       recorder.start(1000);
@@ -148,6 +166,14 @@ export default function CameraRecorder({
       durationTimerRef.current = setInterval(() => {
         setRecordDuration(prev => prev + 1);
       }, 1000);
+
+      // Broadcast camera recording active event for voice follow and teleprompter sync
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('camera_recording_state', { 
+          detail: { isRecording: true, withAudio: recordWithMic } 
+        }));
+      }
+      onRecordingChange?.(true);
     } catch (err) {
       console.error('Error starting MediaRecorder:', err);
       setCameraError('Não foi possível inicializar a gravação de vídeo.');
@@ -177,6 +203,10 @@ export default function CameraRecorder({
     }
     setIsRecording(false);
     setIsPaused(false);
+    onRecordingChange?.(false);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('camera_recording_state', { detail: { isRecording: false } }));
+    }
   };
 
   const downloadRecording = () => {
@@ -224,6 +254,12 @@ export default function CameraRecorder({
               <div className="flex items-center gap-2 pr-2 border-r border-gray-700">
                 <span className="w-3 h-3 rounded-full bg-red-500 animate-ping"></span>
                 <span className="font-mono font-bold text-red-400">REC {formatTime(recordDuration)}</span>
+                {isVoiceFollowActive && (
+                  <span className="hidden sm:inline-flex items-center gap-1 text-[10px] bg-indigo-950/80 border border-indigo-500/60 text-indigo-300 px-1.5 py-0.5 rounded font-semibold animate-pulse">
+                    <Mic size={10} className="text-indigo-400" />
+                    Voz Sync
+                  </span>
+                )}
               </div>
             ) : (
               <div className="flex items-center gap-1.5 text-gray-400 pr-2 border-r border-gray-700">

@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Pause, RotateCcw, FastForward, Rewind, Plus, Minus, ArrowLeft, Smartphone, WifiOff, QrCode, Download, RefreshCw, Camera } from 'lucide-react';
+import { Play, Pause, RotateCcw, FastForward, Rewind, Plus, Minus, ArrowLeft, Smartphone, WifiOff, QrCode, Download, RefreshCw, Camera, Radio } from 'lucide-react';
 import RemotePairModal from './RemotePairModal';
 import QrScannerModal from './QrScannerModal';
+import BluetoothVerifierModal from './BluetoothVerifierModal';
 import { useOrientation } from '../hooks/useOrientation';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import InstallGuideModal from './InstallGuideModal';
-import { RemoteClient, ConnectionMode } from '../services/remoteService';
+import RemoteLatencyIndicator from './RemoteLatencyIndicator';
+import { RemoteClient, ConnectionMode, RemoteStatus } from '../services/remoteService';
+import { detectCurrentDevice } from '../services/deviceDetection';
 
 interface RemoteState {
   isPlaying: boolean;
@@ -28,9 +31,13 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
   const [isConnected, setIsConnected] = useState(false);
   const [hasHost, setHasHost] = useState(false);
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>('disconnected');
+  const [remoteStatus, setRemoteStatus] = useState<RemoteStatus | null>(null);
   const [showQrModal, setShowQrModal] = useState(false);
   const [showScannerModal, setShowScannerModal] = useState(false);
   const [showInstallGuide, setShowInstallGuide] = useState(false);
+  const [showBluetoothVerifier, setShowBluetoothVerifier] = useState(false);
+  const [detectedMobileBluetoothDevices, setDetectedMobileBluetoothDevices] = useState<string[]>([]);
+  const [mobileProfile] = useState(() => detectCurrentDevice());
   const pwaState = usePWAInstall();
   const [state, setState] = useState<RemoteState>({
     isPlaying: false,
@@ -91,6 +98,7 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
         setIsConnected(status.isConnected);
         setHasHost(status.hasHost);
         setConnectionMode(status.mode);
+        setRemoteStatus(status);
         if (!status.hasHost) {
           setState(prev => ({ ...prev, scriptTitle: 'Aguardando o Teleprompter conectar nesta sala...' }));
         }
@@ -134,6 +142,124 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
     }
   };
 
+  // Report mobile device status and Bluetooth accessories to the host teleprompter
+  const sendDeviceStatus = (bluetoothDevs: string[], lastSig?: any) => {
+    if (remoteClientRef.current) {
+      remoteClientRef.current.sendCommand('device_status_update', {
+        id: mobileProfile.id,
+        name: mobileProfile.name,
+        deviceType: mobileProfile.deviceType,
+        os: mobileProfile.os,
+        browser: mobileProfile.browser,
+        bluetoothConnected: bluetoothDevs.length > 0,
+        bluetoothDevices: bluetoothDevs,
+        lastSignal: lastSig
+      });
+    }
+  };
+
+  // Initial announcement of mobile device to host
+  useEffect(() => {
+    if (isConnected) {
+      sendDeviceStatus(detectedMobileBluetoothDevices);
+    }
+  }, [isConnected, detectedMobileBluetoothDevices]);
+
+  // Mobile Gamepad & Bluetooth Pedal Poller
+  useEffect(() => {
+    let lastButtonStates: boolean[] = [];
+    const interval = setInterval(() => {
+      if (typeof navigator === 'undefined' || !navigator.getGamepads) return;
+      const gamepads = navigator.getGamepads();
+      const names: string[] = [];
+
+      for (let i = 0; i < gamepads.length; i++) {
+        const gp = gamepads[i];
+        if (gp && gp.connected) {
+          names.push(gp.id || `Pedal/Gamepad ${i + 1}`);
+
+          if (gp.buttons) {
+            for (let b = 0; b < gp.buttons.length; b++) {
+              const isPressed = !!gp.buttons[b]?.pressed;
+              if (isPressed && !lastButtonStates[b]) {
+                vibrate(40);
+                let action = 'toggle_play';
+                if (b === 0) {
+                  action = 'toggle_play';
+                  const nextPlay = !state.isPlaying;
+                  setState(prev => ({ ...prev, isPlaying: nextPlay }));
+                  sendCommand(nextPlay ? 'play' : 'pause');
+                } else if (b === 12) {
+                  action = 'speed_up';
+                  sendCommand('speed_up');
+                } else if (b === 13) {
+                  action = 'speed_down';
+                  sendCommand('speed_down');
+                } else if (b === 1) {
+                  action = 'restart';
+                  sendCommand('restart');
+                } else {
+                  action = 'toggle_play';
+                  const nextPlay = !state.isPlaying;
+                  setState(prev => ({ ...prev, isPlaying: nextPlay }));
+                  sendCommand(nextPlay ? 'play' : 'pause');
+                }
+
+                sendDeviceStatus(names, {
+                  button: b,
+                  action,
+                  timestamp: Date.now(),
+                  source: 'gamepad'
+                });
+              }
+              lastButtonStates[b] = isPressed;
+            }
+          }
+        }
+      }
+
+      if (names.length !== detectedMobileBluetoothDevices.length) {
+        setDetectedMobileBluetoothDevices(names);
+      }
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, [state.isPlaying, detectedMobileBluetoothDevices]);
+
+  // Mobile Keyboard Bluetooth Pedal listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const pedalKeys = ['Space', 'PageDown', 'PageUp', 'ArrowUp', 'ArrowDown'];
+      if (pedalKeys.includes(e.code)) {
+        e.preventDefault();
+        vibrate(40);
+        let action = 'toggle_play';
+        if (e.code === 'Space' || e.code === 'PageDown') {
+          action = 'toggle_play';
+          const nextPlay = !state.isPlaying;
+          setState(prev => ({ ...prev, isPlaying: nextPlay }));
+          sendCommand(nextPlay ? 'play' : 'pause');
+        } else if (e.code === 'ArrowUp' || e.code === 'PageUp') {
+          action = 'speed_up';
+          sendCommand('speed_up');
+        } else if (e.code === 'ArrowDown') {
+          action = 'speed_down';
+          sendCommand('speed_down');
+        }
+
+        sendDeviceStatus(detectedMobileBluetoothDevices, {
+          button: e.code,
+          action,
+          timestamp: Date.now(),
+          source: 'keyboard'
+        });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [state.isPlaying, detectedMobileBluetoothDevices]);
+
   return (
     <div className="min-h-[100dvh] h-[100dvh] bg-[#07070A] text-white flex flex-col justify-between p-3 sm:p-6 pt-safe pb-safe select-none font-sans overflow-y-auto">
       {/* Toast Notification when rotating device */}
@@ -174,6 +300,14 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Visual Signal Strength & Latency Monitor */}
+          <RemoteLatencyIndicator
+            status={remoteStatus}
+            controllersCount={1}
+            onOpenVerifier={() => setShowBluetoothVerifier(true)}
+            isCompact={true}
+          />
+
           {/* Orientation Live Recognition Badge */}
           <div className="flex items-center gap-1.5 px-2.5 py-1 bg-gray-900 border border-gray-800 rounded-full text-[11px] text-gray-300 font-medium">
             <Smartphone size={13} className={`transition-transform duration-300 ${orientationInfo.isLandscape ? 'rotate-90 text-amber-400' : 'text-amber-400'}`} />
@@ -207,6 +341,22 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
           >
             <QrCode size={14} />
             <span className="hidden sm:inline">Exibir QR</span>
+          </button>
+
+          <button
+            onClick={() => setShowBluetoothVerifier(true)}
+            className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-lg text-xs font-semibold transition-colors border cursor-pointer active:scale-95 ${
+              detectedMobileBluetoothDevices.length > 0
+                ? 'bg-blue-950/80 border-blue-500/80 text-blue-300 shadow-sm'
+                : 'bg-[#1A1B28] hover:bg-gray-800 border-gray-700 text-gray-300'
+            }`}
+            title="Verificador de Conexão Bluetooth & Pedal no Celular"
+          >
+            <Radio size={13} className={detectedMobileBluetoothDevices.length > 0 ? 'text-emerald-400 animate-pulse' : 'text-blue-400'} />
+            <span className="hidden sm:inline">Bluetooth</span>
+            {detectedMobileBluetoothDevices.length > 0 && (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            )}
           </button>
 
           <button
@@ -573,6 +723,33 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
         isOpen={showInstallGuide}
         onClose={() => setShowInstallGuide(false)}
         pwaState={pwaState}
+      />
+
+      {/* Bluetooth & Pedal Verifier Modal */}
+      <BluetoothVerifierModal
+        isOpen={showBluetoothVerifier}
+        onClose={() => setShowBluetoothVerifier(false)}
+        roomCode={roomCode}
+        controllersCount={isConnected ? 1 : 0}
+        connectedMobileDevices={[{
+          id: mobileProfile.id,
+          name: mobileProfile.name,
+          deviceType: mobileProfile.deviceType,
+          os: mobileProfile.os,
+          browser: mobileProfile.browser,
+          connectedAt: Date.now(),
+          lastSeen: Date.now(),
+          bluetoothConnected: detectedMobileBluetoothDevices.length > 0,
+          bluetoothDevices: detectedMobileBluetoothDevices
+        }]}
+        onOpenQrPair={() => {
+          setShowBluetoothVerifier(false);
+          setShowQrModal(true);
+        }}
+        onSendTestSignal={() => {
+          vibrate(50);
+          sendCommand('play');
+        }}
       />
     </div>
   );

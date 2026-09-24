@@ -3,7 +3,7 @@ import { PrompterConfig, AppTheme } from '../types';
 import { useOrientation } from '../hooks/useOrientation';
 import { 
   Settings, Maximize, Minimize, X, Type, MonitorOff, Plus, Minus, Play, 
-  Pause, RotateCcw, Smartphone, Video, Mic, ListOrdered, Timer, Keyboard, Download
+  Pause, RotateCcw, Smartphone, Video, Mic, ListOrdered, Timer, Keyboard, Download, Radio
 } from 'lucide-react';
 
 interface Props {
@@ -24,6 +24,9 @@ interface Props {
   onOpenShortcuts?: () => void;
   onOpenInstallGuide?: () => void;
   isPWAInstalled?: boolean;
+  onOpenBluetoothVerifier?: () => void;
+  isBluetoothConnected?: boolean;
+  hasMobileConnected?: boolean;
 }
 
 const ControlStepper = ({ 
@@ -90,7 +93,10 @@ export default function ControlsHud({
   isVoiceFollowActive = false,
   onOpenShortcuts,
   onOpenInstallGuide,
-  isPWAInstalled = false
+  isPWAInstalled = false,
+  onOpenBluetoothVerifier,
+  isBluetoothConnected = false,
+  hasMobileConnected = false
 }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -327,6 +333,25 @@ export default function ControlsHud({
               >
                 <Keyboard size={14} className="text-amber-400" />
                 <span>Atalhos & Pedais</span>
+              </button>
+            )}
+
+            {/* Bluetooth & Mobile Verifier */}
+            {onOpenBluetoothVerifier && (
+              <button
+                onClick={onOpenBluetoothVerifier}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border ${
+                  isBluetoothConnected || hasMobileConnected
+                    ? 'bg-blue-950/70 border-blue-500/70 text-blue-300 shadow-sm'
+                    : 'bg-[#1E2030] hover:bg-gray-700 border-gray-700 text-gray-200'
+                }`}
+                title="Verificador de conexão Bluetooth (Pedal/Gamepad) e Celular Mobile"
+              >
+                <Radio size={14} className={isBluetoothConnected || hasMobileConnected ? 'text-blue-400 animate-pulse' : 'text-gray-400'} />
+                <span>Bluetooth & Mobile</span>
+                {(isBluetoothConnected || hasMobileConnected) && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                )}
               </button>
             )}
 

@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { PrompterConfig, AppTheme, SavedScript } from './types';
+import { PrompterConfig, AppTheme, SavedScript, ConnectedMobileDevice } from './types';
 import Editor from './components/Editor';
 import ScriptManager from './components/ScriptManager';
 import PrompterView from './components/PrompterView';
 import RemoteControlPad from './components/RemoteControlPad';
-import { Terminal, FileText, Library, Play, Cloud, CloudOff, Keyboard, QrCode, Download } from 'lucide-react';
+import { Terminal, FileText, Library, Play, Cloud, CloudOff, Keyboard, QrCode, Download, Radio } from 'lucide-react';
 import { scriptsApi } from './lib/supabase';
 import ShortcutsModal, { DEFAULT_KEY_BINDINGS } from './components/ShortcutsModal';
 import RemotePairModal from './components/RemotePairModal';
+import BluetoothVerifierModal from './components/BluetoothVerifierModal';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import InstallAppBanner from './components/InstallAppBanner';
 import InstallGuideModal from './components/InstallGuideModal';
@@ -83,6 +84,8 @@ export default function App() {
   });
 
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+  const [isBluetoothVerifierOpen, setIsBluetoothVerifierOpen] = useState(false);
+  const [connectedMobileDevices, setConnectedMobileDevices] = useState<ConnectedMobileDevice[]>([]);
   const pwaState = usePWAInstall();
   const [isInstallGuideOpen, setIsInstallGuideOpen] = useState(false);
 
@@ -153,6 +156,23 @@ export default function App() {
             scriptTitle: curScript.title,
             wordCount: curScript.content.split(/\s+/).filter(Boolean).length,
             inEditor: true
+          });
+        } else if (action === 'device_status_update' && payload) {
+          setConnectedMobileDevices(prev => {
+            const devId = payload.id || 'mobile_device';
+            const existing = prev.filter(d => d.id !== devId);
+            return [{
+              id: devId,
+              name: payload.name || 'Celular Remoto',
+              deviceType: payload.deviceType || 'mobile',
+              os: payload.os || 'Desconhecido',
+              browser: payload.browser,
+              connectedAt: payload.connectedAt || Date.now(),
+              lastSeen: Date.now(),
+              bluetoothConnected: Boolean(payload.bluetoothConnected),
+              bluetoothDevices: payload.bluetoothDevices || [],
+              lastSignal: payload.lastSignal
+            }, ...existing];
           });
         }
       },
@@ -376,6 +396,23 @@ export default function App() {
             <Keyboard size={15} /> <span>Atalhos</span>
           </button>
 
+          {/* Bluetooth & Mobile Connection Verifier */}
+          <button 
+            onClick={() => setIsBluetoothVerifierOpen(true)}
+            className={`flex items-center gap-1.5 px-2.5 sm:px-4 py-2 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 touch-manipulation cursor-pointer active:scale-95 border ${
+              connectedMobileDevices.some(d => d.bluetoothConnected)
+                ? 'bg-blue-950/80 border-blue-500/80 text-blue-300 shadow-sm'
+                : 'bg-[#181A2A] hover:bg-[#202236] text-gray-300 border-gray-800'
+            }`}
+            title="Verificador de conexão Bluetooth (Pedal/Gamepad) e Celular Mobile"
+          >
+            <Radio size={15} className={connectedMobileDevices.some(d => d.bluetoothConnected) ? 'text-emerald-400 animate-pulse' : 'text-blue-400'} />
+            <span>Bluetooth</span>
+            {connectedMobileDevices.some(d => d.bluetoothConnected) && (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+            )}
+          </button>
+
           {!pwaState.isInstalled && (
             <button
               onClick={() => setIsInstallGuideOpen(true)}
@@ -434,6 +471,7 @@ export default function App() {
           setIsRemoteModalOpen(false);
           setActiveTab('remote');
         }}
+        onOpenBluetoothVerifier={() => setIsBluetoothVerifierOpen(true)}
       />
 
       {/* Visual Shortcuts & Bluetooth Pedal Mapping Panel */}
@@ -447,6 +485,23 @@ export default function App() {
         pedalEnabled={config.pedalShortcutsEnabled ?? true}
         onTogglePedal={(enabled) => {
           updateConfig({ pedalShortcutsEnabled: enabled });
+        }}
+        onOpenBluetoothVerifier={() => setIsBluetoothVerifierOpen(true)}
+      />
+
+      {/* Bluetooth & Mobile Device Verifier Modal */}
+      <BluetoothVerifierModal
+        isOpen={isBluetoothVerifierOpen}
+        onClose={() => setIsBluetoothVerifierOpen(false)}
+        roomCode={roomCode}
+        controllersCount={controllersCount}
+        connectedMobileDevices={connectedMobileDevices}
+        onOpenQrPair={() => setIsRemoteModalOpen(true)}
+        onOpenShortcuts={() => setIsShortcutsOpen(true)}
+        onSendTestSignal={() => {
+          if (hostClientRef.current) {
+            hostClientRef.current.sendCommand('toggle_play');
+          }
         }}
       />
 

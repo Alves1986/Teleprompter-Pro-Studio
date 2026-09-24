@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import QRCode from 'qrcode';
-import { X, Copy, Check, Smartphone, Users, ExternalLink, Camera } from 'lucide-react';
+import { X, Copy, Check, Smartphone, Users, ExternalLink, Camera, Radio } from 'lucide-react';
 import QrScannerModal from './QrScannerModal';
 
 interface Props {
@@ -11,6 +11,7 @@ interface Props {
   controllersCount: number;
   onOpenControllerLocal?: () => void;
   onConnectAsControllerWithCode?: (code: string) => void;
+  onOpenBluetoothVerifier?: () => void;
 }
 
 export default function RemotePairModal({
@@ -20,7 +21,8 @@ export default function RemotePairModal({
   onChangeRoomCode,
   controllersCount,
   onOpenControllerLocal,
-  onConnectAsControllerWithCode
+  onConnectAsControllerWithCode,
+  onOpenBluetoothVerifier
 }: Props) {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [copied, setCopied] = useState(false);
@@ -161,6 +163,28 @@ export default function RemotePairModal({
               </span>
             </div>
           </div>
+
+          {/* Direct Bluetooth & Mobile Verifier Access */}
+          {onOpenBluetoothVerifier && (
+            <button
+              onClick={() => {
+                onClose();
+                onOpenBluetoothVerifier();
+              }}
+              className="w-full flex items-center justify-between bg-blue-950/40 hover:bg-blue-950/70 border border-blue-500/40 hover:border-blue-400 px-3.5 py-2.5 rounded-xl mb-3 text-xs transition-colors cursor-pointer group text-left"
+            >
+              <div className="flex items-center gap-2.5 text-blue-300 font-semibold">
+                <Radio size={16} className="text-blue-400 group-hover:scale-110 transition-transform" />
+                <div>
+                  <span className="block text-gray-100 font-bold">Verificador de Bluetooth & Celular</span>
+                  <span className="text-[11px] text-gray-400 font-normal">Checar se o pedal está conectado com o mobile</span>
+                </div>
+              </div>
+              <span className="text-[11px] text-blue-400 font-mono font-bold flex items-center gap-1 shrink-0 bg-blue-900/60 px-2 py-1 rounded border border-blue-500/30">
+                Verificar &rarr;
+              </span>
+            </button>
+          )}
 
           {/* Room Code Selector */}
           <form onSubmit={handleApplyCode} className="flex gap-2 mb-3">

@@ -20,6 +20,7 @@ export interface RemoteCommand {
 }
 
 export type ConnectionMode = 'websocket' | 'broadcast' | 'polling' | 'disconnected';
+export type SignalQuality = 'excellent' | 'good' | 'fair' | 'poor';
 
 export interface RemoteStatus {
   isConnected: boolean;
@@ -27,6 +28,8 @@ export interface RemoteStatus {
   controllersCount: number;
   hasHost: boolean;
   room: string;
+  latencyMs?: number;
+  signalQuality?: SignalQuality;
 }
 
 type StateCallback = (state: Partial<RemoteSyncState>) => void;
@@ -82,6 +85,8 @@ export class RemoteClient {
   private pollInterval: any = null;
   private reconnectTimeout: any = null;
   private heartbeatInterval: any = null;
+  private peerPingInterval: any = null;
+  private currentLatency = 0;
   private lastCommandId = 0;
   private isDestroyed = false;
 
@@ -97,7 +102,9 @@ export class RemoteClient {
     mode: 'disconnected',
     controllersCount: 0,
     hasHost: false,
-    room: ''
+    room: '',
+    latencyMs: undefined,
+    signalQuality: undefined
   };
 
   constructor(
@@ -123,6 +130,30 @@ export class RemoteClient {
   private updateStatus(patch: Partial<RemoteStatus>) {
     this.currentStatus = { ...this.currentStatus, ...patch };
     this.onStatusCb?.(this.currentStatus);
+  }
+
+  private updateLatency(rtt: number) {
+    if (rtt <= 0) return;
+    // Exponential smoothing (alpha = 0.4)
+    this.currentLatency = this.currentLatency > 0 
+      ? Math.round(this.currentLatency * 0.6 + rtt * 0.4) 
+      : rtt;
+
+    let signalQuality: SignalQuality = 'excellent';
+    if (this.currentLatency <= 55) {
+      signalQuality = 'excellent';
+    } else if (this.currentLatency <= 125) {
+      signalQuality = 'good';
+    } else if (this.currentLatency <= 250) {
+      signalQuality = 'fair';
+    } else {
+      signalQuality = 'poor';
+    }
+
+    this.updateStatus({
+      latencyMs: this.currentLatency,
+      signalQuality
+    });
   }
 
   private init() {
@@ -157,6 +188,17 @@ export class RemoteClient {
           } else if (data.type === 'join') {
             if (data.role === 'controller' && this.role === 'host') {
               this.updateStatus({ controllersCount: Math.max(1, this.currentStatus.controllersCount + 1) });
+            }
+          } else if (data.type === 'peer_ping') {
+            this.broadcastChannel?.postMessage({
+              type: 'peer_pong',
+              sendTime: data.sendTime,
+              senderId: this.clientId
+            });
+          } else if (data.type === 'peer_pong') {
+            if (data.sendTime) {
+              const rtt = Math.max(1, Date.now() - data.sendTime);
+              this.updateLatency(rtt);
             }
           }
         };
@@ -245,20 +287,55 @@ export class RemoteClient {
           clientId: this.clientId
         });
 
-        // 15s ping-pong heartbeat
+        // 2.5s ping-pong heartbeat and active latency tracking
         if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
         this.heartbeatInterval = setInterval(() => {
           if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.sendWs({ type: 'ping', clientId: this.clientId });
+            this.sendWs({ type: 'ping', clientId: this.clientId, sendTime: Date.now() });
           }
-        }, 15000);
+        }, 2500);
+
+        // Periodic peer ping between host and controllers for true device-to-device latency
+        if (this.peerPingInterval) clearInterval(this.peerPingInterval);
+        this.peerPingInterval = setInterval(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN && this.currentStatus.controllersCount > 0) {
+            this.sendWs({
+              type: 'peer_ping',
+              sendTime: Date.now(),
+              from: this.clientId
+            });
+          }
+        }, 2500);
       };
 
       this.ws.onmessage = (event) => {
         if (this.isDestroyed) return;
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'pong') return;
+          if (msg.type === 'pong') {
+            if (msg.sendTime) {
+              const rtt = Math.max(1, Date.now() - msg.sendTime);
+              this.updateLatency(rtt);
+            }
+            return;
+          }
+
+          if (msg.type === 'peer_ping') {
+            this.sendWs({
+              type: 'peer_pong',
+              sendTime: msg.sendTime,
+              from: this.clientId
+            });
+            return;
+          }
+
+          if (msg.type === 'peer_pong') {
+            if (msg.sendTime) {
+              const rtt = Math.max(1, Date.now() - msg.sendTime);
+              this.updateLatency(rtt);
+            }
+            return;
+          }
 
           if (msg.type === 'room_status') {
             this.updateStatus({
@@ -355,9 +432,15 @@ export class RemoteClient {
 
   private async httpPoll() {
     try {
+      const startTime = Date.now();
       const url = `/api/remote/poll?room=${encodeURIComponent(this.room)}&role=${this.role}&clientId=${encodeURIComponent(this.clientId)}&since=${this.lastCommandId}`;
       const res = await fetch(url);
       if (res.ok) {
+        const rtt = Math.max(1, Date.now() - startTime);
+        if (this.currentStatus.mode === 'polling') {
+          this.updateLatency(rtt);
+        }
+
         const data = await res.json();
         this.updateStatus({
           isConnected: true,
@@ -530,5 +613,6 @@ export class RemoteClient {
     if (this.pollInterval) clearInterval(this.pollInterval);
     if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
     if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+    if (this.peerPingInterval) clearInterval(this.peerPingInterval);
   }
 }

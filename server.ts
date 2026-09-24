@@ -158,13 +158,25 @@ async function startServer() {
       try {
         const data = JSON.parse(raw.toString());
 
-        // Heartbeat ping-pong
+        // Heartbeat ping-pong & latency measurement
         if (data.type === 'ping') {
           if (data.clientId && currentRoom) {
             updateSession(currentRoom, data.clientId, currentRole);
           }
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'pong' }));
+            ws.send(JSON.stringify({ 
+              type: 'pong', 
+              pingId: data.pingId,
+              sendTime: data.sendTime || Date.now()
+            }));
+          }
+          return;
+        }
+
+        // Direct peer ping / pong for measuring end-to-end device latency
+        if (data.type === 'peer_ping' || data.type === 'peer_pong') {
+          if (currentRoom) {
+            forwardToRole(currentRoom, currentRole === 'host' ? 'controller' : 'host', data);
           }
           return;
         }
@@ -397,7 +409,7 @@ async function startServer() {
 
       if (type === 'improve') {
         prompt = `Aja como um redator profissional de TV. Melhore o texto deste roteiro de teleprompter para garantir uma fluidez perfeita de fala, corrigindo erros e melhorando o ritmo.
-Importante: Conserve quaisquer marcadores especiais presentes, como [PAUSA], [CUE: ...], [NOTA: ...], [ÊNFASE: ...].
+Importante: Conserve quaisquer marcadores especiais presentes, como [PAUSA], [CUE: ...], [NOTA: ...], [ÊNFASE: ...], [BLOCO: ...].
 Roteiro original:
 ${content || ''}`;
       } else if (type === 'summarize') {
@@ -409,6 +421,37 @@ ${content || ''}`;
         prompt = `Crie um roteiro rápido para teleprompter sobre o seguinte tópico: "${promptText || ''}".
 Inclua, de forma inteligente, alguns marcadores de formatação como [PAUSA] para indicar respiros, [ÊNFASE: palavra] para destaques, e [CUE: câmera/ação] se necessário.
 Retorne apenas o texto do roteiro pronto.`;
+      } else if (type === 'split_intervals' || type === 'dynamic_split') {
+        prompt = `Você é um diretor de teleprompter e especialista em oratória e ritmo de locução de TV e vídeo.
+Sua missão: Analisar o roteiro de teleprompter e aplicar quebra automática de linhas e separador de intervalos/pausas para tornar a leitura dinâmica, confortável e fluida para o orador.
+
+CRÍTICO - REGRA DE OURO INVIOLÁVEL:
+NÃO ALTERE, NÃO SUBSTITUA, NÃO CORRIJA, NÃO RESUMA E NÃO ADICIONE NENHUMA PALAVRA AO TEXTO.
+Todas as palavras do texto original devem ser mantidas exatamente na mesma ordem e com o mesmo vocabulário. O conteúdo textual NÃO pode ser modificado.
+
+O QUE VOCÊ DEVE FAZER EXCLUSIVAMENTE:
+1. QUEBRA AUTOMÁTICA DE LINHAS (RITMO DE FALA):
+   - Divida o texto em linhas curtas e dinâmicas (em média 3 a 7 palavras por linha), ideais para rolagem de teleprompter.
+   - Faça a quebra nos pontos naturais de respiração da oratória (após vírgulas, pontos finais, conjunções, pausas dramáticas ou transições de pensamento).
+   - Elimine parágrafos densos e blocos longos de texto contínuo.
+
+2. INTERVALOS E PAUSAS [PAUSA]:
+   - Insira o marcador [PAUSA] em linhas isoladas onde o apresentador deve fazer uma pausa natural para respirar, digerir a ideia, após perguntas retóricas para reflexão do espectador ou em mudanças de raciocínio.
+   - Distribua as pausas de forma cadenciada e natural (a cada 2 a 4 frases ou após momentos de impacto).
+
+3. MARCADORES DE ÊNFASE [ÊNFASE: palavra]:
+   - Destaque palavras-chave de impacto envolvendo-as em [ÊNFASE: palavra] (utilize exatamente a palavra original do texto).
+
+4. DIVISORES DE BLOCO [BLOCO: Título]:
+   - Se o roteiro possuir mudanças claras de assunto ou atos (ex: Introdução, Desenvolvimento, Conclusão), insira [BLOCO: Nome do Bloco] no início do bloco.
+
+5. PRESERVAR MARCADORES EXISTENTES:
+   - Mantenha quaisquer marcadores já existentes no texto ([PAUSA], [CUE: ...], [NOTA: ...], [ÊNFASE: ...], [BLOCO: ...]).
+
+Retorne EXCLUSIVAMENTE o texto resultante formatado e pronto para o teleprompter, sem introduções, aspas, preâmbulos ou notas explicativas.
+
+Roteiro original:
+${content || ''}`;
       } else {
         return res.status(400).json({ error: 'Tipo de ação inválido' });
       }

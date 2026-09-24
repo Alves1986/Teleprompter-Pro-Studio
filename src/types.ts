@@ -84,3 +84,23 @@ export interface Bookmark {
   label?: string;
   createdAt: number;
 }
+
+export interface ConnectedMobileDevice {
+  id: string;
+  name: string;
+  deviceType: 'mobile' | 'tablet' | 'desktop';
+  os: string;
+  browser?: string;
+  connectedAt: number;
+  lastSeen: number;
+  bluetoothConnected: boolean;
+  bluetoothDevices: string[];
+  batteryLevel?: number;
+  lastSignal?: {
+    type: string;
+    button: string | number;
+    action?: string;
+    timestamp: number;
+    source: 'gamepad' | 'keyboard' | 'bluetooth' | 'touch';
+  };
+}
