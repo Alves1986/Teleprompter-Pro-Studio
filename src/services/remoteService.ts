@@ -89,6 +89,8 @@ export class RemoteClient {
   private currentLatency = 0;
   private lastCommandId = 0;
   private isDestroyed = false;
+  private pendingWsMessages: any[] = [];
+  private lastSyncedState: Partial<RemoteSyncState> | null = null;
 
   // Deduplication set to avoid processing the exact same command twice (e.g. via WS and HTTP fallback)
   private processedCmdIds = new Set<string>();
@@ -287,6 +289,22 @@ export class RemoteClient {
           clientId: this.clientId
         });
 
+        // Flush any pending messages that were queued while connecting
+        while (this.pendingWsMessages.length > 0) {
+          const item = this.pendingWsMessages.shift();
+          if (item) this.sendWs(item);
+        }
+
+        // If host, immediately push latest known state
+        if (this.role === 'host' && this.lastSyncedState) {
+          this.syncState(this.lastSyncedState);
+        }
+
+        // If controller, immediately request state from host
+        if (this.role === 'controller') {
+          this.sendCommand('request_sync');
+        }
+
         // 2.5s ping-pong heartbeat and active latency tracking
         if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
         this.heartbeatInterval = setInterval(() => {
@@ -470,12 +488,20 @@ export class RemoteClient {
   }
 
   private sendWs(data: any): boolean {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try {
-        this.ws.send(JSON.stringify(data));
+    if (this.ws) {
+      if (this.ws.readyState === WebSocket.OPEN) {
+        try {
+          this.ws.send(JSON.stringify(data));
+          return true;
+        } catch {
+          return false;
+        }
+      } else if (this.ws.readyState === WebSocket.CONNECTING) {
+        // Queue message so it sends as soon as connection is opened
+        if (this.pendingWsMessages.length < 40) {
+          this.pendingWsMessages.push(data);
+        }
         return true;
-      } catch {
-        return false;
       }
     }
     return false;
@@ -498,7 +524,7 @@ export class RemoteClient {
       timestamp: Date.now()
     };
 
-    // 1. Send via WebSocket if open
+    // 1. Send via WebSocket if open or queue if connecting
     const wsSent = this.sendWs(message);
 
     // 2. Broadcast via BroadcastChannel locally for other open tabs
@@ -533,6 +559,7 @@ export class RemoteClient {
    * Broadcast state (called by host)
    */
   public syncState(state: Partial<RemoteSyncState>) {
+    this.lastSyncedState = { ...this.lastSyncedState, ...state };
     const message = {
       type: 'sync_state',
       clientId: this.clientId,
@@ -570,7 +597,6 @@ export class RemoteClient {
 
   public changeRoom(newRoom: string) {
     const cleanRoom = (newRoom || 'STUDIO1').trim().toUpperCase();
-    if (this.room === cleanRoom) return;
     this.room = cleanRoom;
     this.currentStatus.room = this.room;
     this.lastCommandId = 0;
@@ -589,11 +615,27 @@ export class RemoteClient {
         role: this.role,
         clientId: this.clientId
       });
+      if (this.role === 'controller') {
+        this.sendCommand('request_sync');
+      } else if (this.role === 'host' && this.lastSyncedState) {
+        this.syncState(this.lastSyncedState);
+      }
     } else {
       this.connectWebSocket();
     }
 
     this.httpRegisterJoin();
+  }
+
+  public forceReconnect() {
+    this.lastCommandId = 0;
+    this.connectWebSocket();
+    this.httpRegisterJoin();
+    if (this.role === 'controller') {
+      this.sendCommand('request_sync');
+    } else if (this.role === 'host' && this.lastSyncedState) {
+      this.syncState(this.lastSyncedState);
+    }
   }
 
   public destroy() {

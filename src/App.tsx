@@ -46,15 +46,6 @@ export default function App() {
     return saved ? { ...DEFAULT_CONFIG, ...JSON.parse(saved) } : DEFAULT_CONFIG;
   });
 
-  // Detect URL query parameter for direct remote control
-  const [urlRemoteCode] = useState<string | null>(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      return params.get('remote');
-    }
-    return null;
-  });
-
   // Unified Room Code for Remote Control Pairing
   const [roomCode, setRoomCode] = useState<string>(() => {
     if (typeof window !== 'undefined') {
@@ -290,7 +281,7 @@ export default function App() {
   if (activeTab === 'remote') {
     return (
       <RemoteControlPad 
-        initialRoomCode={urlRemoteCode || roomCode} 
+        initialRoomCode={roomCode} 
         onExit={() => {
           // Clear ?remote parameter without reload
           if (window.history && window.history.replaceState) {

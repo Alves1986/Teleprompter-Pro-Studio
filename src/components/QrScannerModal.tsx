@@ -21,6 +21,7 @@ export default function QrScannerModal({ isOpen, onClose, onScanSuccess }: Props
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
   const [detectedCode, setDetectedCode] = useState<string | null>(null);
+  const [connectProgress, setConnectProgress] = useState(0);
   const [isScanning, setIsScanning] = useState(true);
 
   const scanAnimFrameRef = useRef<number | null>(null);
@@ -240,15 +241,24 @@ export default function QrScannerModal({ isOpen, onClose, onScanSuccess }: Props
   const onFoundCode = (roomCode: string) => {
     setIsScanning(false);
     setDetectedCode(roomCode);
+    setConnectProgress(30);
     playSuccessBeep();
     triggerVibration();
 
-    // Small delay so user sees visual confirmation
+    setTimeout(() => {
+      setConnectProgress(65);
+    }, 180);
+
+    setTimeout(() => {
+      setConnectProgress(100);
+    }, 400);
+
+    // Smooth transition so user sees 100% confirmation
     setTimeout(() => {
       stopCamera();
       onScanSuccess(roomCode);
       onClose();
-    }, 600);
+    }, 650);
   };
 
   // Handle image upload scanning (useful when camera is in use or user has a screenshot)
@@ -316,14 +326,25 @@ export default function QrScannerModal({ isOpen, onClose, onScanSuccess }: Props
         {/* Camera Viewfinder Area */}
         <div className="relative bg-black h-72 sm:h-80 flex items-center justify-center overflow-hidden">
           {detectedCode ? (
-            <div className="absolute inset-0 bg-emerald-950/90 flex flex-col items-center justify-center gap-3 z-30 animate-in zoom-in-95">
-              <div className="w-16 h-16 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center text-emerald-400">
+            <div className="absolute inset-0 bg-emerald-950/95 flex flex-col items-center justify-center gap-3 z-30 animate-in zoom-in-95 p-6 text-center">
+              <div className="w-16 h-16 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)]">
                 <CheckCircle size={36} />
               </div>
-              <div className="text-center">
+              <div className="w-full max-w-xs">
                 <p className="text-xs uppercase tracking-wider text-emerald-400 font-bold">QR Code Identificado!</p>
-                <p className="text-2xl font-mono font-black text-white mt-1">{detectedCode}</p>
-                <p className="text-xs text-emerald-300/80 mt-1">Conectando imediatamente...</p>
+                <p className="text-2xl font-mono font-black text-white mt-1 tracking-wider">{detectedCode}</p>
+                
+                {/* Visual Connection Handshake Progress Bar */}
+                <div className="mt-3 w-full bg-black/60 border border-emerald-500/40 rounded-full h-2.5 overflow-hidden p-0.5">
+                  <div 
+                    className="h-full bg-gradient-to-r from-emerald-500 to-emerald-300 rounded-full transition-all duration-300 shadow-[0_0_10px_#10b981]"
+                    style={{ width: `${connectProgress}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-emerald-300 font-medium mt-2">
+                  <span>{connectProgress === 100 ? 'Sincronizado!' : 'Conectando ao Teleprompter...'}</span>
+                  <span className="font-mono font-bold">{connectProgress}%</span>
+                </div>
               </div>
             </div>
           ) : null}

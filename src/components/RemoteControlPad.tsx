@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Pause, RotateCcw, FastForward, Rewind, Plus, Minus, ArrowLeft, Smartphone, WifiOff, QrCode, Download, RefreshCw, Camera, Radio } from 'lucide-react';
+import { Play, Pause, RotateCcw, FastForward, Rewind, Plus, Minus, ArrowLeft, Smartphone, WifiOff, QrCode, Download, RefreshCw, Camera, Radio, CheckCircle, X } from 'lucide-react';
 import RemotePairModal from './RemotePairModal';
 import QrScannerModal from './QrScannerModal';
 import BluetoothVerifierModal from './BluetoothVerifierModal';
@@ -30,6 +30,9 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
   const [roomCode, setRoomCode] = useState(initialRoomCode.toUpperCase() || 'STUDIO1');
   const [isConnected, setIsConnected] = useState(false);
   const [hasHost, setHasHost] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [connectionHandshakeProgress, setConnectionHandshakeProgress] = useState(100);
+  const [scanNotice, setScanNotice] = useState<string | null>(null);
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>('disconnected');
   const [remoteStatus, setRemoteStatus] = useState<RemoteStatus | null>(null);
   const [showQrModal, setShowQrModal] = useState(false);
@@ -50,6 +53,16 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
   });
 
   const remoteClientRef = useRef<RemoteClient | null>(null);
+
+  // Synchronize roomCode if initialRoomCode prop changes
+  useEffect(() => {
+    if (initialRoomCode) {
+      const clean = initialRoomCode.trim().toUpperCase();
+      if (clean && clean !== roomCode) {
+        setRoomCode(clean);
+      }
+    }
+  }, [initialRoomCode]);
 
   // Real-time automatic orientation detection
   const orientationInfo = useOrientation();
@@ -79,9 +92,15 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
   };
 
   useEffect(() => {
+    setIsConnecting(true);
+    setConnectionHandshakeProgress(35);
+
     const client = new RemoteClient(roomCode, 'controller', {
       onState: (data) => {
         setIsConnected(true);
+        setHasHost(true);
+        setIsConnecting(false);
+        setConnectionHandshakeProgress(100);
         setState(prev => ({
           ...prev,
           isPlaying: data.isPlaying !== undefined ? data.isPlaying : prev.isPlaying,
@@ -99,7 +118,11 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
         setHasHost(status.hasHost);
         setConnectionMode(status.mode);
         setRemoteStatus(status);
-        if (!status.hasHost) {
+        if (status.hasHost) {
+          setIsConnecting(false);
+          setConnectionHandshakeProgress(100);
+        } else if (status.isConnected) {
+          setConnectionHandshakeProgress(prev => Math.max(prev, 70));
           setState(prev => ({ ...prev, scriptTitle: 'Aguardando o Teleprompter conectar nesta sala...' }));
         }
       }
@@ -110,7 +133,15 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
     // Request immediate state sync
     client.sendCommand('request_sync');
 
+    // Periodic sync poll every 2.5s until host state is received
+    const syncInterval = setInterval(() => {
+      if (client) {
+        client.sendCommand('request_sync');
+      }
+    }, 2500);
+
     return () => {
+      clearInterval(syncInterval);
       client.destroy();
       remoteClientRef.current = null;
     };
@@ -125,15 +156,20 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
 
   const handleReconnect = () => {
     vibrate(50);
+    setIsConnecting(true);
+    setConnectionHandshakeProgress(35);
     if (remoteClientRef.current) {
-      remoteClientRef.current.changeRoom(roomCode);
-      remoteClientRef.current.sendCommand('request_sync');
+      remoteClientRef.current.forceReconnect();
     }
   };
 
   const handleScanSuccess = (scannedCode: string) => {
     if (scannedCode) {
       const clean = scannedCode.trim().toUpperCase();
+      setIsConnecting(true);
+      setConnectionHandshakeProgress(40);
+      setScanNotice(`QR Code lido com sucesso! Sala: ${clean}`);
+      setTimeout(() => setScanNotice(null), 5000);
       setRoomCode(clean);
       if (remoteClientRef.current) {
         remoteClientRef.current.changeRoom(clean);
@@ -390,6 +426,66 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
         </div>
       </div>
 
+      {/* Visual Connection Handshake Alert / Toast */}
+      {scanNotice && (
+        <div className="bg-emerald-950/90 border border-emerald-500/50 rounded-xl p-3 mb-2 flex items-center justify-between text-xs text-emerald-300 animate-in slide-in-from-top-2">
+          <div className="flex items-center gap-2">
+            <CheckCircle size={16} className="text-emerald-400 shrink-0" />
+            <span className="font-medium">{scanNotice}</span>
+          </div>
+          <button onClick={() => setScanNotice(null)} className="text-emerald-400 hover:text-white p-1">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* Connection Handshake Status Banner if not fully synced */}
+      {(!hasHost || isConnecting || !isConnected) && (
+        <div className="bg-[#121320] border border-amber-500/40 rounded-xl p-3 mb-3 shadow-lg animate-in fade-in">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-2">
+              <span className={`w-2.5 h-2.5 rounded-full ${isConnected ? 'bg-amber-400' : 'bg-red-400'} animate-ping`} />
+              <span className="text-xs font-bold text-amber-300">
+                {isConnected && !hasHost 
+                  ? `Conectado à sala ${roomCode} • Aguardando Teleprompter...` 
+                  : isConnected && hasHost 
+                  ? `Conectado à sala ${roomCode}`
+                  : `Estabelecendo conexão na sala ${roomCode}...`}
+              </span>
+            </div>
+            <span className="text-xs font-mono font-bold text-amber-400">
+              {isConnected && hasHost ? '100%' : `${connectionHandshakeProgress}%`}
+            </span>
+          </div>
+          
+          {/* Visual Connection Handshake Progress Bar */}
+          <div className="w-full bg-gray-900 rounded-full h-2 overflow-hidden border border-gray-800">
+            <div 
+              className="h-full bg-gradient-to-r from-amber-500 to-amber-300 transition-all duration-300"
+              style={{ width: `${isConnected && hasHost ? 100 : connectionHandshakeProgress}%` }}
+            />
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between mt-2 text-[11px] text-gray-400 gap-2">
+            <span>Abra o Teleprompter em outro aparelho ou aba com a mesma sala <strong className="text-amber-300 font-mono">{roomCode}</strong>.</span>
+            <div className="flex gap-2 shrink-0">
+              <button
+                onClick={handleReconnect}
+                className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded-lg font-bold text-[10px] transition cursor-pointer"
+              >
+                Reconectar
+              </button>
+              <button
+                onClick={() => setShowScannerModal(true)}
+                className="px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg font-bold text-[10px] transition cursor-pointer"
+              >
+                Escanear QR
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {orientationInfo.isLandscape ? (
         /* Landscape Ergonomic Gamepad Layout: Left (Play + Nav) / Right (Info + Speed/Font Dials) */
         <div className="grid grid-cols-2 gap-4 my-auto py-2 items-center">
@@ -461,14 +557,14 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
             <div className="bg-[#13141C] border border-gray-800 rounded-xl p-3 shadow-lg">
               <div className="flex justify-between items-start mb-1.5">
                 <div className="flex-1 mr-2">
-                  <span className="text-[9px] uppercase font-bold tracking-wider text-gray-500">Roteiro em Exibição</span>
+                  <span className="text-[9px] uppercase font-bold tracking-wider text-gray-400">Roteiro em Exibição</span>
                   <h2 className="text-sm font-bold text-white truncate max-w-[200px]">
                     {state.scriptTitle}
                   </h2>
                 </div>
                 <div className="text-right shrink-0">
-                  <span className="text-[9px] uppercase font-bold tracking-wider text-gray-500">Progresso</span>
-                  <p className="text-sm font-mono font-bold text-amber-400">{Math.round(state.progressPercent)}%</p>
+                  <span className="text-[9px] uppercase font-bold tracking-wider text-amber-400/90">Posição da Leitura</span>
+                  <p className="text-sm font-mono font-bold text-white">{Math.round(state.progressPercent)}% <span className="text-[10px] text-gray-400 font-normal">lido</span></p>
                 </div>
               </div>
 
@@ -552,14 +648,14 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
           <div className="my-3 bg-[#13141C] border border-gray-800 rounded-xl p-4 shadow-lg">
             <div className="flex justify-between items-start mb-2">
               <div className="flex-1 mr-2">
-                <span className="text-[10px] uppercase font-bold tracking-wider text-gray-500">Roteiro em Exibição</span>
+                <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400">Roteiro em Exibição</span>
                 <h2 className="text-base sm:text-lg font-bold text-white truncate max-w-[260px] sm:max-w-md">
                   {state.scriptTitle}
                 </h2>
               </div>
               <div className="text-right shrink-0">
-                <span className="text-[10px] uppercase font-bold tracking-wider text-gray-500">Progresso</span>
-                <p className="text-base font-mono font-bold text-amber-400">{Math.round(state.progressPercent)}%</p>
+                <span className="text-[10px] uppercase font-bold tracking-wider text-amber-400/90">Posição da Leitura</span>
+                <p className="text-base font-mono font-bold text-white">{Math.round(state.progressPercent)}% <span className="text-xs text-gray-400 font-normal">do texto</span></p>
               </div>
             </div>
 
@@ -570,6 +666,11 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
                 style={{ width: `${Math.min(100, Math.max(0, state.progressPercent))}%` }}
               />
             </div>
+            <div className="flex justify-between items-center text-[10px] text-gray-400 mt-1.5 font-medium">
+              <span>Início do texto</span>
+              <span className="text-amber-400/80">{state.isPlaying ? '• Rolando texto •' : 'Texto pausado'}</span>
+              <span>Fim do texto</span>
+            </div>
           </div>
 
           {/* Primary Big Action: PLAY / PAUSE */}
@@ -579,9 +680,11 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
                 const nextPlaying = !state.isPlaying;
                 setState(prev => ({ ...prev, isPlaying: nextPlaying }));
                 sendCommand(nextPlaying ? 'play' : 'pause');
+                if (!isConnected) {
+                  handleReconnect();
+                }
               }}
-              disabled={!isConnected}
-              className={`w-36 h-36 sm:w-44 sm:h-44 rounded-full flex flex-col items-center justify-center shadow-2xl transition-all duration-200 active:scale-95 border-4 ${
+              className={`w-36 h-36 sm:w-44 sm:h-44 rounded-full flex flex-col items-center justify-center shadow-2xl transition-all duration-200 active:scale-95 border-4 cursor-pointer ${
                 state.isPlaying
                   ? 'bg-amber-500/20 border-amber-500 text-amber-400 hover:bg-amber-500/30 ring-8 ring-amber-500/10'
                   : 'bg-emerald-600/30 border-emerald-500 text-emerald-300 hover:bg-emerald-600/40'
@@ -599,8 +702,8 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
                 </>
               )}
             </button>
-            <p className="text-xs text-gray-500 mt-4">
-              {state.isPlaying ? 'Texto em reprodução • Toque para pausar' : 'Teleprompter parado • Toque para iniciar'}
+            <p className="text-xs text-gray-400 mt-4 font-medium">
+              {state.isPlaying ? 'Texto em reprodução • Toque para pausar' : 'Teleprompter parado • Toque para rolar'}
             </p>
           </div>
 

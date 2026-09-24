@@ -217,9 +217,20 @@ async function startServer() {
             if (roomStates.has(currentRoom) && ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify(roomStates.get(currentRoom)));
             }
-            if (hasHost) {
-              forwardToRole(currentRoom, 'host', { type: 'request_sync' });
+            // Always request state from host to guarantee instant sync
+            forwardToRole(currentRoom, 'host', { type: 'request_sync' });
+            forwardToRole(currentRoom, 'host', { type: 'command', action: 'request_sync', payload: {} });
+
+            if (!roomCommands.has(currentRoom)) {
+              roomCommands.set(currentRoom, []);
             }
+            roomCommands.get(currentRoom)!.push({
+              id: commandCounter++,
+              cmdId: `sync_req_${Date.now()}`,
+              action: 'request_sync',
+              payload: {},
+              timestamp: Date.now()
+            });
           } else if (currentRole === 'host') {
             // If host just joined and we have cached state, tell controllers
             if (roomStates.has(currentRoom)) {
@@ -293,6 +304,22 @@ async function startServer() {
     const clientId = req.body?.clientId || `http_${Date.now()}`;
 
     updateSession(room, clientId, role);
+
+    if (role === 'controller') {
+      forwardToRole(room, 'host', { type: 'request_sync' });
+      forwardToRole(room, 'host', { type: 'command', action: 'request_sync', payload: {} });
+
+      if (!roomCommands.has(room)) {
+        roomCommands.set(room, []);
+      }
+      roomCommands.get(room)!.push({
+        id: commandCounter++,
+        cmdId: `sync_req_${Date.now()}`,
+        action: 'request_sync',
+        payload: {},
+        timestamp: Date.now()
+      });
+    }
 
     const state = roomStates.get(room) || null;
     const controllersCount = getRoomControllersCount(room);
