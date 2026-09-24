@@ -12,6 +12,7 @@ export interface RemoteSyncState {
 }
 
 export interface RemoteCommand {
+  cmdId?: string;
   id?: number | string;
   action: string;
   payload?: any;
@@ -32,7 +33,48 @@ type StateCallback = (state: Partial<RemoteSyncState>) => void;
 type CommandCallback = (action: string, payload?: any) => void;
 type StatusCallback = (status: RemoteStatus) => void;
 
+/**
+ * Extracts and cleans a room code from a scanned string or URL.
+ * Handles:
+ * - Full URLs with ?remote=XYZ or &remote=XYZ
+ * - URLs with #remote=XYZ
+ * - Raw codes like "STUDIO-1234" or "studio1"
+ */
+export function extractRoomCode(raw: string): string {
+  if (!raw) return '';
+  const trimmed = raw.trim();
+
+  try {
+    // Check if it's a valid URL
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.includes('?')) {
+      const url = new URL(trimmed.startsWith('http') ? trimmed : `https://dummy.com/${trimmed}`);
+      const paramCode = url.searchParams.get('remote') || url.searchParams.get('room') || url.searchParams.get('code');
+      if (paramCode) {
+        return paramCode.trim().toUpperCase();
+      }
+
+      // Check hash fragment (e.g. #remote=STUDIO-1)
+      if (url.hash) {
+        const hashParams = new URLSearchParams(url.hash.replace(/^#/, ''));
+        const hashRem = hashParams.get('remote') || hashParams.get('room');
+        if (hashRem) return hashRem.trim().toUpperCase();
+      }
+    }
+  } catch {}
+
+  // Check key=value pattern if plain string
+  const match = trimmed.match(/remote=([a-zA-Z0-9_-]+)/i);
+  if (match && match[1]) {
+    return match[1].trim().toUpperCase();
+  }
+
+  // Otherwise return alphanumeric + hyphen sanitized string (max 24 chars)
+  const sanitized = trimmed.replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase().slice(0, 24);
+  return sanitized;
+}
+
 export class RemoteClient {
+  public readonly clientId: string;
   private room: string;
   private role: 'host' | 'controller';
   private ws: WebSocket | null = null;
@@ -42,6 +84,9 @@ export class RemoteClient {
   private heartbeatInterval: any = null;
   private lastCommandId = 0;
   private isDestroyed = false;
+
+  // Deduplication set to avoid processing the exact same command twice (e.g. via WS and HTTP fallback)
+  private processedCmdIds = new Set<string>();
 
   private onStateCb?: StateCallback;
   private onCommandCb?: CommandCallback;
@@ -64,6 +109,7 @@ export class RemoteClient {
       onStatus?: StatusCallback;
     }
   ) {
+    this.clientId = `client_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     this.room = (room || 'STUDIO1').trim().toUpperCase();
     this.role = role;
     this.onStateCb = callbacks.onState;
@@ -87,7 +133,7 @@ export class RemoteClient {
   }
 
   /**
-   * BroadcastChannel for instant 0ms local cross-tab sync
+   * BroadcastChannel for instant 0ms cross-tab sync in the same browser
    */
   private initBroadcastChannel() {
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -101,10 +147,13 @@ export class RemoteClient {
             this.updateStatus({ isConnected: true, hasHost: true });
             this.onStateCb?.(data);
           } else if (data.type === 'command' && this.role === 'host') {
-            this.updateStatus({ isConnected: true, controllersCount: Math.max(1, this.currentStatus.controllersCount) });
-            const action = data.action;
-            const payload = data.payload !== undefined ? data.payload : data;
-            this.onCommandCb?.(action, payload);
+            const cmdId = data.cmdId || `${data.action}_${data.timestamp}`;
+            if (this.shouldProcessCommand(cmdId)) {
+              this.updateStatus({ isConnected: true, controllersCount: Math.max(1, this.currentStatus.controllersCount) });
+              const action = data.action;
+              const payload = data.payload !== undefined ? data.payload : data;
+              this.onCommandCb?.(action, payload);
+            }
           } else if (data.type === 'join') {
             if (data.role === 'controller' && this.role === 'host') {
               this.updateStatus({ controllersCount: Math.max(1, this.currentStatus.controllersCount + 1) });
@@ -112,16 +161,32 @@ export class RemoteClient {
           }
         };
 
-        // Announce presence via local broadcast channel
         this.broadcastChannel.postMessage({
           type: 'join',
           room: this.room,
-          role: this.role
+          role: this.role,
+          clientId: this.clientId
         });
       } catch (e) {
         console.warn('BroadcastChannel error:', e);
       }
     }
+  }
+
+  /**
+   * Deduplicates commands arriving via multiple transports
+   */
+  private shouldProcessCommand(cmdId: string): boolean {
+    if (!cmdId) return true;
+    if (this.processedCmdIds.has(cmdId)) {
+      return false;
+    }
+    this.processedCmdIds.add(cmdId);
+    // Auto-prune old command IDs after 8 seconds
+    setTimeout(() => {
+      this.processedCmdIds.delete(cmdId);
+    }, 8000);
+    return true;
   }
 
   /**
@@ -135,8 +200,11 @@ export class RemoteClient {
       if (e.key === `tp_cmd_${this.room}` && this.role === 'host' && e.newValue) {
         try {
           const cmd = JSON.parse(e.newValue);
-          const payload = cmd.payload !== undefined ? cmd.payload : cmd;
-          this.onCommandCb?.(cmd.action, payload);
+          const cmdId = cmd.cmdId || `${cmd.action}_${cmd.timestamp}`;
+          if (this.shouldProcessCommand(cmdId)) {
+            const payload = cmd.payload !== undefined ? cmd.payload : cmd;
+            this.onCommandCb?.(cmd.action, payload);
+          }
         } catch {}
       } else if (e.key === `tp_state_${this.room}` && this.role === 'controller' && e.newValue) {
         try {
@@ -173,14 +241,15 @@ export class RemoteClient {
         this.sendWs({
           type: 'join',
           room: this.room,
-          role: this.role
+          role: this.role,
+          clientId: this.clientId
         });
 
-        // Start 15s ping-pong heartbeat for Cloud Run / reverse proxy persistence
+        // 15s ping-pong heartbeat
         if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
         this.heartbeatInterval = setInterval(() => {
           if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.sendWs({ type: 'ping' });
+            this.sendWs({ type: 'ping', clientId: this.clientId });
           }
         }, 15000);
       };
@@ -203,9 +272,12 @@ export class RemoteClient {
             }
           } else if (msg.type === 'command') {
             if (this.role === 'host') {
-              const action = msg.action;
-              const payload = msg.payload !== undefined ? msg.payload : msg;
-              this.onCommandCb?.(action, payload);
+              const cmdId = msg.cmdId || `${msg.action}_${msg.timestamp}`;
+              if (this.shouldProcessCommand(cmdId)) {
+                const action = msg.action;
+                const payload = msg.payload !== undefined ? msg.payload : msg;
+                this.onCommandCb?.(action, payload);
+              }
             }
           } else if (msg.type === 'request_sync') {
             if (this.role === 'host') {
@@ -213,7 +285,7 @@ export class RemoteClient {
             }
           }
         } catch (err) {
-          console.warn('Remote ws message parse error:', err);
+          console.warn('Remote ws parse error:', err);
         }
       };
 
@@ -224,43 +296,35 @@ export class RemoteClient {
         }
         if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
         
-        // Reconnect WebSocket after 3 seconds
+        // Exponential/staggered reconnect
         clearTimeout(this.reconnectTimeout);
         this.reconnectTimeout = setTimeout(() => {
           this.connectWebSocket();
-        }, 3000);
+        }, 2500);
       };
 
       this.ws.onerror = () => {
-        // Socket error: fallback to polling
         if (this.currentStatus.mode === 'websocket') {
           this.updateStatus({ mode: 'polling' });
         }
       };
     } catch (e) {
-      console.warn('Failed to initialize WebSocket:', e);
+      console.warn('WebSocket init exception:', e);
       this.updateStatus({ mode: 'polling' });
     }
   }
 
   /**
-   * HTTP REST fallback polling
-   * Ensures 100% reliable command delivery even through restrictive corporate firewalls or non-WebSocket mobile browsers
+   * HTTP REST fallback polling for 100% reliable continuous connection
    */
   private startHttpPolling() {
-    // Initial join registration via HTTP REST
     this.httpRegisterJoin();
 
-    // Poll every 1200ms
     if (this.pollInterval) clearInterval(this.pollInterval);
     this.pollInterval = setInterval(async () => {
       if (this.isDestroyed) return;
-      // If WebSocket is active and open, HTTP polling can run less aggressively (every 5s)
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        return;
-      }
       await this.httpPoll();
-    }, 1200);
+    }, 1500);
   }
 
   private async httpRegisterJoin() {
@@ -268,7 +332,11 @@ export class RemoteClient {
       const res = await fetch('/api/remote/join', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ room: this.room, role: this.role })
+        body: JSON.stringify({
+          room: this.room,
+          role: this.role,
+          clientId: this.clientId
+        })
       });
       if (res.ok) {
         const data = await res.json();
@@ -282,20 +350,18 @@ export class RemoteClient {
           this.onStateCb?.(data.state);
         }
       }
-    } catch {
-      // Ignored if offline
-    }
+    } catch {}
   }
 
   private async httpPoll() {
     try {
-      const url = `/api/remote/poll?room=${encodeURIComponent(this.room)}&role=${this.role}&since=${this.lastCommandId}`;
+      const url = `/api/remote/poll?room=${encodeURIComponent(this.room)}&role=${this.role}&clientId=${encodeURIComponent(this.clientId)}&since=${this.lastCommandId}`;
       const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         this.updateStatus({
           isConnected: true,
-          mode: 'polling',
+          mode: this.ws && this.ws.readyState === WebSocket.OPEN ? 'websocket' : 'polling',
           controllersCount: data.controllersCount ?? this.currentStatus.controllersCount,
           hasHost: data.hasHost ?? this.currentStatus.hasHost
         });
@@ -309,14 +375,15 @@ export class RemoteClient {
             if (typeof cmd.id === 'number' && cmd.id > this.lastCommandId) {
               this.lastCommandId = cmd.id;
             }
-            const payload = cmd.payload !== undefined ? cmd.payload : cmd;
-            this.onCommandCb?.(cmd.action, payload);
+            const cmdId = cmd.cmdId || `${cmd.action}_${cmd.timestamp || cmd.id}`;
+            if (this.shouldProcessCommand(cmdId)) {
+              const payload = cmd.payload !== undefined ? cmd.payload : cmd;
+              this.onCommandCb?.(cmd.action, payload);
+            }
           }
         }
       }
-    } catch {
-      // Polling network drop
-    }
+    } catch {}
   }
 
   private sendWs(data: any): boolean {
@@ -333,20 +400,25 @@ export class RemoteClient {
 
   /**
    * Send a command (called by controller)
+   * With unique cmdId to prevent double-execution across transports
    */
   public sendCommand(action: string, payload: any = {}) {
+    const cmdId = `cmd_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const message = {
       type: 'command',
+      cmdId,
       action,
       payload,
+      clientId: this.clientId,
+      room: this.room,
       ...payload,
       timestamp: Date.now()
     };
 
-    // 1. Send via WebSocket if available
-    this.sendWs(message);
+    // 1. Send via WebSocket if open
+    const wsSent = this.sendWs(message);
 
-    // 2. Broadcast via BroadcastChannel locally for other tabs
+    // 2. Broadcast via BroadcastChannel locally for other open tabs
     if (this.broadcastChannel) {
       try {
         this.broadcastChannel.postMessage(message);
@@ -358,14 +430,18 @@ export class RemoteClient {
       localStorage.setItem(`tp_cmd_${this.room}`, JSON.stringify(message));
     } catch {}
 
-    // 4. Always send via HTTP REST endpoint as reliable backup
+    // 4. Send via HTTP REST only if WebSocket is not open or as queue fallback
+    // Always store on server for polling hosts, but mark wsSent so server doesn't duplicate
     fetch('/api/remote/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         room: this.room,
         action,
-        payload
+        payload,
+        cmdId,
+        clientId: this.clientId,
+        alreadySentViaWs: wsSent
       })
     }).catch(() => {});
   }
@@ -376,6 +452,8 @@ export class RemoteClient {
   public syncState(state: Partial<RemoteSyncState>) {
     const message = {
       type: 'sync_state',
+      clientId: this.clientId,
+      room: this.room,
       ...state,
       timestamp: Date.now()
     };
@@ -390,7 +468,7 @@ export class RemoteClient {
       } catch {}
     }
 
-    // 3. Save to localStorage for cross-tab event fallback
+    // 3. Save to localStorage
     try {
       localStorage.setItem(`tp_state_${this.room}`, JSON.stringify(message));
     } catch {}
@@ -401,15 +479,18 @@ export class RemoteClient {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         room: this.room,
+        clientId: this.clientId,
         state: message
       })
     }).catch(() => {});
   }
 
   public changeRoom(newRoom: string) {
-    if (this.room === newRoom.trim().toUpperCase()) return;
-    this.room = newRoom.trim().toUpperCase();
+    const cleanRoom = (newRoom || 'STUDIO1').trim().toUpperCase();
+    if (this.room === cleanRoom) return;
+    this.room = cleanRoom;
     this.currentStatus.room = this.room;
+    this.lastCommandId = 0;
     
     if (this.broadcastChannel) {
       try {
@@ -422,7 +503,8 @@ export class RemoteClient {
       this.sendWs({
         type: 'join',
         room: this.room,
-        role: this.role
+        role: this.role,
+        clientId: this.clientId
       });
     } else {
       this.connectWebSocket();

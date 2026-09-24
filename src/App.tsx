@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { PrompterConfig, AppTheme, SavedScript } from './types';
 import Editor from './components/Editor';
 import ScriptManager from './components/ScriptManager';
@@ -108,35 +108,50 @@ export default function App() {
     };
   });
 
+  const configRef = useRef(config);
+  configRef.current = config;
+  const currentScriptRef = useRef(currentScript);
+  currentScriptRef.current = currentScript;
+  const hostClientRef = useRef<RemoteClient | null>(null);
+
   // Maintain host connection when on main dashboard to track paired controllers and allow remote triggers
   useEffect(() => {
-    if (activeTab === 'prompter' || activeTab === 'remote') return;
+    if (activeTab === 'prompter' || activeTab === 'remote') {
+      if (hostClientRef.current) {
+        hostClientRef.current.destroy();
+        hostClientRef.current = null;
+      }
+      return;
+    }
 
     const client = new RemoteClient(roomCode, 'host', {
       onCommand: (action, payload) => {
+        const curConfig = configRef.current;
+        const curScript = currentScriptRef.current;
+
         if (action === 'play' || action === 'toggle_play') {
           setAutoPlayPrompter(true);
           setActiveTab('prompter');
         } else if (action === 'speed_up') {
-          updateConfig({ speed: Math.min(10, +(config.speed + 0.5).toFixed(1)) });
+          updateConfig({ speed: Math.min(10, +(curConfig.speed + 0.5).toFixed(1)) });
         } else if (action === 'speed_down') {
-          updateConfig({ speed: Math.max(0.5, +(config.speed - 0.5).toFixed(1)) });
+          updateConfig({ speed: Math.max(0.5, +(curConfig.speed - 0.5).toFixed(1)) });
         } else if (action === 'set_speed' && typeof payload?.speed === 'number') {
           updateConfig({ speed: payload.speed });
         } else if (action === 'font_up') {
-          updateConfig({ fontSize: Math.min(150, config.fontSize + 4) });
+          updateConfig({ fontSize: Math.min(150, curConfig.fontSize + 4) });
         } else if (action === 'font_down') {
-          updateConfig({ fontSize: Math.max(20, config.fontSize - 4) });
+          updateConfig({ fontSize: Math.max(20, curConfig.fontSize - 4) });
         } else if (action === 'set_font' && typeof payload?.fontSize === 'number') {
           updateConfig({ fontSize: payload.fontSize });
         } else if (action === 'request_sync') {
           client.syncState({
             isPlaying: false,
-            speed: config.speed,
-            fontSize: config.fontSize,
+            speed: curConfig.speed,
+            fontSize: curConfig.fontSize,
             progressPercent: 0,
-            scriptTitle: currentScript.title,
-            wordCount: currentScript.content.split(/\s+/).filter(Boolean).length,
+            scriptTitle: curScript.title,
+            wordCount: curScript.content.split(/\s+/).filter(Boolean).length,
             inEditor: true
           });
         }
@@ -146,20 +161,38 @@ export default function App() {
       }
     });
 
+    hostClientRef.current = client;
+
     client.syncState({
       isPlaying: false,
-      speed: config.speed,
-      fontSize: config.fontSize,
+      speed: configRef.current.speed,
+      fontSize: configRef.current.fontSize,
       progressPercent: 0,
-      scriptTitle: currentScript.title,
-      wordCount: currentScript.content.split(/\s+/).filter(Boolean).length,
+      scriptTitle: currentScriptRef.current.title,
+      wordCount: currentScriptRef.current.content.split(/\s+/).filter(Boolean).length,
       inEditor: true
     });
 
     return () => {
       client.destroy();
+      hostClientRef.current = null;
     };
-  }, [roomCode, activeTab, config.speed, config.fontSize, currentScript.title, currentScript.content]);
+  }, [roomCode, activeTab]);
+
+  // Sync state changes without dropping or reconnecting WebSocket
+  useEffect(() => {
+    if (hostClientRef.current && (activeTab !== 'prompter' && activeTab !== 'remote')) {
+      hostClientRef.current.syncState({
+        isPlaying: false,
+        speed: config.speed,
+        fontSize: config.fontSize,
+        progressPercent: 0,
+        scriptTitle: currentScript.title,
+        wordCount: currentScript.content.split(/\s+/).filter(Boolean).length,
+        inEditor: true
+      });
+    }
+  }, [config.speed, config.fontSize, currentScript.title, currentScript.content, activeTab]);
 
   useEffect(() => {
     // Permitir rotação livre de acordo com a orientação do aparelho
@@ -272,20 +305,20 @@ export default function App() {
 
   return (
     <div className="h-[100dvh] min-h-[100dvh] max-h-[100dvh] bg-[#0A0A0F] text-gray-200 font-sans flex flex-col focus:outline-none overflow-hidden">
-      <header className="bg-[#1E2030] border-b border-gray-800 pt-[max(0.6rem,env(safe-area-inset-top))] px-3 sm:px-6 pb-2.5 sm:pb-3 flex flex-col lg:flex-row items-stretch lg:items-center justify-between shadow-md z-10 gap-2.5 sm:gap-4 shrink-0">
+      <header className="bg-[#1E2030] border-b border-gray-800 header-pt-safe px-3 sm:px-6 pb-2.5 sm:pb-3 flex flex-col lg:flex-row items-stretch lg:items-center justify-between shadow-md z-30 gap-2 sm:gap-4 shrink-0">
         {/* Top bar: Brand logo and status, plus mobile action button */}
         <div className="flex items-center justify-between gap-2 w-full lg:w-auto">
           <div className="flex items-center gap-2 min-w-0">
-            <Terminal size={22} className="text-amber-500 shrink-0" />
-            <h1 className="text-lg sm:text-xl font-display font-bold text-white tracking-wide flex items-center truncate">
+            <Terminal size={20} className="text-amber-500 shrink-0" />
+            <h1 className="text-base sm:text-xl font-display font-bold text-white tracking-wide flex items-center truncate">
               Teleprompter<span className="text-amber-500">Pro</span>
               <span className="text-[9px] uppercase font-bold tracking-widest text-[#1E2030] bg-amber-500 px-1.5 py-0.5 rounded ml-2 align-middle hidden sm:inline-block">STUDIO</span>
             </h1>
-            <div className="flex items-center gap-1 ml-2 sm:ml-3 border-l border-gray-800 pl-2 sm:pl-3 shrink-0">
+            <div className="flex items-center gap-1 ml-1.5 sm:ml-3 border-l border-gray-800 pl-1.5 sm:pl-3 shrink-0">
               {isOnline ? (
-                <Cloud size={14} className="text-green-500 shrink-0" />
+                <Cloud size={13} className="text-green-500 shrink-0" />
               ) : (
-                <CloudOff size={14} className="text-red-500 shrink-0" />
+                <CloudOff size={13} className="text-red-500 shrink-0" />
               )}
               <span className="text-[10px] uppercase tracking-tighter text-gray-400 font-mono">
                 {isOnline ? 'Cloud' : 'Local'}
@@ -296,7 +329,7 @@ export default function App() {
           {/* Quick Present Button on mobile right next to logo for immediate access */}
           <button 
             onClick={() => setActiveTab('prompter')}
-            className="lg:hidden bg-amber-500 hover:bg-amber-400 text-black px-3.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all shadow-md shadow-amber-500/20 uppercase text-xs tracking-wider shrink-0"
+            className="lg:hidden bg-amber-500 hover:bg-amber-400 active:bg-amber-300 text-black px-3.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all shadow-md shadow-amber-500/20 uppercase text-xs tracking-wider shrink-0 touch-manipulation cursor-pointer active:scale-95"
             title="Iniciar Teleprompter"
           >
             <Play size={13} fill="currentColor" /> Apresentar
@@ -304,22 +337,22 @@ export default function App() {
         </div>
 
         {/* Navigation Tabs Bar */}
-        <div className="flex bg-black/50 p-1 rounded-lg border border-gray-800 w-full lg:w-auto overflow-x-auto no-scrollbar scroll-smooth items-center gap-1 justify-start lg:justify-center">
+        <div className="flex bg-black/50 p-1 rounded-lg border border-gray-800 w-full lg:w-auto overflow-x-auto no-scrollbar scroll-smooth items-center gap-1 justify-start lg:justify-center touch-manipulation">
           <button 
             onClick={() => setActiveTab('editor')}
-            className={`flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 ${activeTab === 'editor' ? 'bg-[#1E2030] text-amber-500 shadow-sm font-semibold' : 'text-gray-400 hover:text-gray-200'}`}
+            className={`flex items-center gap-1.5 px-3 sm:px-4 py-2 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 touch-manipulation cursor-pointer active:scale-95 ${activeTab === 'editor' ? 'bg-[#1E2030] text-amber-500 shadow-sm font-semibold' : 'text-gray-400 hover:text-gray-200'}`}
           >
             <FileText size={15} /> <span>Editor</span>
           </button>
           <button 
             onClick={() => setActiveTab('library')}
-            className={`flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 ${activeTab === 'library' ? 'bg-[#1E2030] text-amber-500 shadow-sm font-semibold' : 'text-gray-400 hover:text-gray-200'}`}
+            className={`flex items-center gap-1.5 px-3 sm:px-4 py-2 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 touch-manipulation cursor-pointer active:scale-95 ${activeTab === 'library' ? 'bg-[#1E2030] text-amber-500 shadow-sm font-semibold' : 'text-gray-400 hover:text-gray-200'}`}
           >
             <Library size={15} /> <span>Biblioteca</span>
           </button>
           <button 
             onClick={() => setIsRemoteModalOpen(true)}
-            className={`flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 border ${
+            className={`flex items-center gap-1.5 px-3 sm:px-4 py-2 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 border touch-manipulation cursor-pointer active:scale-95 ${
               controllersCount > 0 
                 ? 'bg-emerald-950/70 border-emerald-500/80 text-emerald-400 shadow-sm' 
                 : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border-amber-500/30'
@@ -337,7 +370,7 @@ export default function App() {
           </button>
           <button 
             onClick={() => setIsShortcutsOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 text-gray-400 hover:text-amber-400 hover:bg-[#1E2030]"
+            className="flex items-center gap-1.5 px-2.5 sm:px-4 py-2 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 text-gray-400 hover:text-amber-400 hover:bg-[#1E2030] touch-manipulation cursor-pointer active:scale-95"
             title="Mapeamento de atalhos e pedais Bluetooth"
           >
             <Keyboard size={15} /> <span>Atalhos</span>
@@ -346,7 +379,7 @@ export default function App() {
           {!pwaState.isInstalled && (
             <button
               onClick={() => setIsInstallGuideOpen(true)}
-              className="flex items-center gap-1.5 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 shadow-sm"
+              className="flex items-center gap-1.5 px-2.5 sm:px-4 py-2 sm:py-2 rounded-md transition-all text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 shadow-sm touch-manipulation cursor-pointer active:scale-95"
               title={`Instalar aplicativo`}
             >
               <Download size={14} />
@@ -363,7 +396,7 @@ export default function App() {
           
           <button 
             onClick={() => setActiveTab('prompter')}
-            className="bg-amber-600 hover:bg-amber-500 text-black px-5 py-2 rounded-lg font-bold flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-amber-500/20 uppercase text-xs tracking-wider"
+            className="bg-amber-600 hover:bg-amber-500 active:bg-amber-400 text-black px-5 py-2 rounded-lg font-bold flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-amber-500/20 uppercase text-xs tracking-wider touch-manipulation cursor-pointer"
           >
             <Play size={16} fill="currentColor" /> Apresentar
           </button>
@@ -371,9 +404,9 @@ export default function App() {
       </header>
 
       {/* Screen notice to download / install app on mobile and tablet */}
-      <InstallAppBanner pwaState={pwaState} className="mx-2 sm:mx-4 mt-2.5 mb-1" />
+      <InstallAppBanner pwaState={pwaState} className="mx-0 sm:mx-4 sm:mt-2.5 sm:mb-1 shrink-0" />
 
-      <main className="flex-1 overflow-hidden flex relative">
+      <main className="flex-1 min-h-0 overflow-hidden flex relative">
         {activeTab === 'editor' ? (
            <Editor script={currentScript} onChange={setCurrentScript} onDelete={handleDeleteScript} />
         ) : (
@@ -392,6 +425,12 @@ export default function App() {
         }}
         controllersCount={controllersCount}
         onOpenControllerLocal={() => {
+          setIsRemoteModalOpen(false);
+          setActiveTab('remote');
+        }}
+        onConnectAsControllerWithCode={(scannedCode) => {
+          setRoomCode(scannedCode);
+          sessionStorage.setItem('tp_room_code', scannedCode);
           setIsRemoteModalOpen(false);
           setActiveTab('remote');
         }}

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Pause, RotateCcw, FastForward, Rewind, Plus, Minus, ArrowLeft, Smartphone, WifiOff, QrCode, Download, RefreshCw } from 'lucide-react';
+import { Play, Pause, RotateCcw, FastForward, Rewind, Plus, Minus, ArrowLeft, Smartphone, WifiOff, QrCode, Download, RefreshCw, Camera } from 'lucide-react';
 import RemotePairModal from './RemotePairModal';
+import QrScannerModal from './QrScannerModal';
 import { useOrientation } from '../hooks/useOrientation';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import InstallGuideModal from './InstallGuideModal';
@@ -28,6 +29,7 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
   const [hasHost, setHasHost] = useState(false);
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>('disconnected');
   const [showQrModal, setShowQrModal] = useState(false);
+  const [showScannerModal, setShowScannerModal] = useState(false);
   const [showInstallGuide, setShowInstallGuide] = useState(false);
   const pwaState = usePWAInstall();
   const [state, setState] = useState<RemoteState>({
@@ -121,6 +123,17 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
     }
   };
 
+  const handleScanSuccess = (scannedCode: string) => {
+    if (scannedCode) {
+      const clean = scannedCode.trim().toUpperCase();
+      setRoomCode(clean);
+      if (remoteClientRef.current) {
+        remoteClientRef.current.changeRoom(clean);
+        remoteClientRef.current.sendCommand('request_sync');
+      }
+    }
+  };
+
   return (
     <div className="min-h-[100dvh] h-[100dvh] bg-[#07070A] text-white flex flex-col justify-between p-3 sm:p-6 pt-safe pb-safe select-none font-sans overflow-y-auto">
       {/* Toast Notification when rotating device */}
@@ -179,12 +192,21 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
           )}
 
           <button
+            onClick={() => setShowScannerModal(true)}
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-black rounded-lg text-xs font-bold transition-all shadow-md cursor-pointer active:scale-95"
+            title="Escanear QR Code de outro dispositivo"
+          >
+            <Camera size={13} />
+            <span>Escanear QR</span>
+          </button>
+
+          <button
             onClick={() => setShowQrModal(true)}
             className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1 bg-[#1A1B28] hover:bg-gray-800 border border-amber-500/30 text-amber-400 rounded-lg text-xs font-semibold transition-colors"
             title="Exibir QR Code para parear outro aparelho"
           >
             <QrCode size={14} />
-            <span className="hidden sm:inline">QR Code</span>
+            <span className="hidden sm:inline">Exibir QR</span>
           </button>
 
           <button
@@ -537,6 +559,13 @@ export default function RemoteControlPad({ initialRoomCode = '', onExit }: Props
         roomCode={roomCode}
         onChangeRoomCode={(newCode) => setRoomCode(newCode)}
         controllersCount={isConnected ? 1 : 0}
+      />
+
+      {/* QR Scanner Modal for Scanning Teleprompter Screen */}
+      <QrScannerModal
+        isOpen={showScannerModal}
+        onClose={() => setShowScannerModal(false)}
+        onScanSuccess={handleScanSuccess}
       />
 
       {/* Install Guide Modal */}

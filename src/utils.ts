@@ -1,8 +1,34 @@
 import { TextStats } from './types';
 
 export const stripMarkers = (text: string) => {
-  return text.replace(/\[(PAUSA|CUE|NOTA|ÊNFASE)(?::.*?)?\]/gi, '');
+  return text.replace(/\[(PAUSA|CUE|NOTA|ÊNFASE|BLOCO|SEÇÃO|SEGMENTO)(?::.*?)?\]/gi, '');
 };
+
+export const stripAllScriptMarkers = (text: string): string => {
+  return text
+    .replace(/\[(?:PAUSA|CUE|NOTA|ÊNFASE|BLOCO|SEÇÃO|SEGMENTO)(?::.*?)?\]/gi, ' ')
+    .replace(/^#+\s+/gm, '') // markdown headings
+    .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1') // markdown bold/italic
+    .replace(/_{1,3}([^_]+)_{1,3}/g, '$1');
+};
+
+export const normalizeVoiceText = (text: string): string => {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // remove diacritics / accents
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')   // strip punctuation
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+export const PORTUGUESE_STOP_WORDS = new Set([
+  'o', 'a', 'os', 'as', 'um', 'uma', 'uns', 'umas',
+  'de', 'do', 'da', 'dos', 'das', 'em', 'no', 'na', 'nos', 'nas',
+  'por', 'para', 'pra', 'com', 'sem', 'sob', 'sobre',
+  'e', 'ou', 'mas', 'que', 'se', 'ja', 'so', 'ta', 'ne',
+  'ao', 'aos', 'me', 'te', 'lhe', 'lhes'
+]);
 
 export const calculateStats = (text: string): TextStats => {
   const cleanText = stripMarkers(text);

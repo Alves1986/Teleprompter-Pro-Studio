@@ -25,7 +25,35 @@ interface RoomClient {
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
+
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`Port ${PORT} in use, retrying in 1s...`);
+      setTimeout(() => {
+        try {
+          server.close();
+        } catch (_) {}
+        server.listen(PORT, '0.0.0.0');
+      }, 1000);
+    } else {
+      console.error('Server error:', err);
+    }
+  });
+
+  const cleanShutdown = () => {
+    try {
+      wss.close();
+      server.close(() => {
+        process.exit(0);
+      });
+    } catch (_) {
+      process.exit(0);
+    }
+  };
+
+  process.on('SIGTERM', cleanShutdown);
+  process.on('SIGINT', cleanShutdown);
 
   app.use(express.json());
 
@@ -33,8 +61,16 @@ async function startServer() {
   const wss = new WebSocketServer({ noServer: true });
   const rooms = new Map<string, RoomClient[]>();
   const roomStates = new Map<string, any>();
-  const roomCommands = new Map<string, { id: number; action: string; payload: any; timestamp: number }[]>();
+  const roomCommands = new Map<string, { id: number; cmdId?: string; action: string; payload: any; timestamp: number }[]>();
   let commandCounter = 1;
+
+  interface ActiveSession {
+    clientId: string;
+    role: 'host' | 'controller';
+    lastSeen: number;
+  }
+  const roomSessions = new Map<string, Map<string, ActiveSession>>();
+  const recentlyForwardedCmds = new Set<string>();
 
   // Handle HTTP Upgrade explicitly so Vite or proxy doesn't drop it
   server.on('upgrade', (request, socket, head) => {
@@ -50,14 +86,45 @@ async function startServer() {
     }
   });
 
+  const updateSession = (room: string, clientId: string, role: 'host' | 'controller') => {
+    if (!room || !clientId) return;
+    if (!roomSessions.has(room)) {
+      roomSessions.set(room, new Map());
+    }
+    roomSessions.get(room)!.set(clientId, { clientId, role, lastSeen: Date.now() });
+  };
+
+  const cleanSessions = (room: string) => {
+    const sessions = roomSessions.get(room);
+    if (!sessions) return;
+    const now = Date.now();
+    for (const [id, s] of sessions.entries()) {
+      if (now - s.lastSeen > 12000) {
+        sessions.delete(id);
+      }
+    }
+  };
+
   const getRoomControllersCount = (roomCode: string) => {
-    const list = rooms.get(roomCode) || [];
-    return list.filter(c => c.role === 'controller' && c.ws.readyState === WebSocket.OPEN).length;
+    cleanSessions(roomCode);
+    const sessions = roomSessions.get(roomCode);
+    const sessionControllers = sessions 
+      ? Array.from(sessions.values()).filter(s => s.role === 'controller').length 
+      : 0;
+    const wsControllers = (rooms.get(roomCode) || [])
+      .filter(c => c.role === 'controller' && c.ws.readyState === WebSocket.OPEN).length;
+    return Math.max(wsControllers, sessionControllers);
   };
 
   const getRoomHasHost = (roomCode: string) => {
-    const list = rooms.get(roomCode) || [];
-    return list.some(c => c.role === 'host' && c.ws.readyState === WebSocket.OPEN);
+    cleanSessions(roomCode);
+    const sessions = roomSessions.get(roomCode);
+    const sessionHost = sessions 
+      ? Array.from(sessions.values()).some(s => s.role === 'host') 
+      : false;
+    const wsHost = (rooms.get(roomCode) || [])
+      .some(c => c.role === 'host' && c.ws.readyState === WebSocket.OPEN);
+    return wsHost || sessionHost;
   };
 
   const broadcastToRoom = (roomCode: string, payload: any) => {
@@ -85,6 +152,7 @@ async function startServer() {
   wss.on('connection', (ws) => {
     let currentRoom = '';
     let currentRole: 'host' | 'controller' = 'controller';
+    let currentClientId = '';
 
     ws.on('message', (raw) => {
       try {
@@ -92,6 +160,9 @@ async function startServer() {
 
         // Heartbeat ping-pong
         if (data.type === 'ping') {
+          if (data.clientId && currentRoom) {
+            updateSession(currentRoom, data.clientId, currentRole);
+          }
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'pong' }));
           }
@@ -101,6 +172,9 @@ async function startServer() {
         if (data.type === 'join') {
           currentRoom = (data.room || 'STUDIO1').trim().toUpperCase();
           currentRole = data.role === 'host' ? 'host' : 'controller';
+          currentClientId = data.clientId || `ws_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+          updateSession(currentRoom, currentClientId, currentRole);
 
           if (!rooms.has(currentRoom)) {
             rooms.set(currentRoom, []);
@@ -126,7 +200,7 @@ async function startServer() {
             room: currentRoom
           });
 
-          // 2. If controller joined: immediately push cached state if available and ask host for fresh sync
+          // 2. Push state to controller or trigger state broadcast from host
           if (currentRole === 'controller') {
             if (roomStates.has(currentRoom) && ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify(roomStates.get(currentRoom)));
@@ -134,16 +208,26 @@ async function startServer() {
             if (hasHost) {
               forwardToRole(currentRoom, 'host', { type: 'request_sync' });
             }
+          } else if (currentRole === 'host') {
+            // If host just joined and we have cached state, tell controllers
+            if (roomStates.has(currentRoom)) {
+              forwardToRole(currentRoom, 'controller', roomStates.get(currentRoom));
+            }
           }
         } else if (data.type === 'sync_state') {
           if (currentRoom) {
+            if (currentClientId) updateSession(currentRoom, currentClientId, 'host');
             roomStates.set(currentRoom, data);
             forwardToRole(currentRoom, 'controller', data);
           }
         } else if (data.type === 'command') {
           if (currentRoom) {
+            if (currentClientId) updateSession(currentRoom, currentClientId, 'controller');
+            const cmdId = data.cmdId || `cmd_${Date.now()}_${commandCounter}`;
+            
             const cmdObj = {
               id: commandCounter++,
+              cmdId,
               action: data.action,
               payload: data.payload !== undefined ? data.payload : data,
               timestamp: Date.now()
@@ -155,6 +239,10 @@ async function startServer() {
             const q = roomCommands.get(currentRoom)!;
             q.push(cmdObj);
             if (q.length > 30) q.shift();
+
+            // Track recent command ID to avoid duplicate forwarding
+            recentlyForwardedCmds.add(cmdId);
+            setTimeout(() => recentlyForwardedCmds.delete(cmdId), 6000);
 
             forwardToRole(currentRoom, 'host', data);
           }
@@ -169,6 +257,10 @@ async function startServer() {
         const list = rooms.get(currentRoom)!.filter(c => c.ws !== ws);
         rooms.set(currentRoom, list);
 
+        if (currentClientId && roomSessions.has(currentRoom)) {
+          roomSessions.get(currentRoom)!.delete(currentClientId);
+        }
+
         const controllersCount = getRoomControllersCount(currentRoom);
         const hasHost = getRoomHasHost(currentRoom);
 
@@ -178,7 +270,6 @@ async function startServer() {
           hasHost,
           room: currentRoom
         });
-        // We purposefully preserve roomStates so reloaded controllers immediately get the script
       }
     });
   });
@@ -187,6 +278,9 @@ async function startServer() {
   app.post('/api/remote/join', (req, res) => {
     const room = (req.body?.room || 'STUDIO1').trim().toUpperCase();
     const role = req.body?.role === 'host' ? 'host' : 'controller';
+    const clientId = req.body?.clientId || `http_${Date.now()}`;
+
+    updateSession(room, clientId, role);
 
     const state = roomStates.get(room) || null;
     const controllersCount = getRoomControllersCount(room);
@@ -204,7 +298,11 @@ async function startServer() {
 
   app.post('/api/remote/sync', (req, res) => {
     const room = (req.body?.room || 'STUDIO1').trim().toUpperCase();
+    const clientId = req.body?.clientId;
     const state = req.body?.state;
+
+    if (clientId) updateSession(room, clientId, 'host');
+
     if (room && state) {
       roomStates.set(room, state);
       forwardToRole(room, 'controller', state);
@@ -216,6 +314,11 @@ async function startServer() {
     const room = (req.body?.room || 'STUDIO1').trim().toUpperCase();
     const action = req.body?.action;
     const payload = req.body?.payload;
+    const cmdId = req.body?.cmdId || `cmd_${Date.now()}_${commandCounter}`;
+    const clientId = req.body?.clientId;
+    const alreadySentViaWs = Boolean(req.body?.alreadySentViaWs);
+
+    if (clientId) updateSession(room, clientId, 'controller');
 
     if (!room || !action) {
       return res.status(400).json({ error: 'room and action are required' });
@@ -223,6 +326,7 @@ async function startServer() {
 
     const cmdObj = {
       id: commandCounter++,
+      cmdId,
       action,
       payload,
       timestamp: Date.now()
@@ -235,12 +339,19 @@ async function startServer() {
     q.push(cmdObj);
     if (q.length > 30) q.shift();
 
-    forwardToRole(room, 'host', {
-      type: 'command',
-      action,
-      payload,
-      ...payload
-    });
+    // Only forward to host WebSocket if this command wasn't already sent via WebSocket
+    if (!alreadySentViaWs && !recentlyForwardedCmds.has(cmdId)) {
+      recentlyForwardedCmds.add(cmdId);
+      setTimeout(() => recentlyForwardedCmds.delete(cmdId), 6000);
+
+      forwardToRole(room, 'host', {
+        type: 'command',
+        cmdId,
+        action,
+        payload,
+        ...payload
+      });
+    }
 
     res.json({ ok: true, id: cmdObj.id });
   });
@@ -248,7 +359,10 @@ async function startServer() {
   app.get('/api/remote/poll', (req, res) => {
     const room = String(req.query.room || 'STUDIO1').trim().toUpperCase();
     const role = req.query.role === 'host' ? 'host' : 'controller';
+    const clientId = String(req.query.clientId || '');
     const since = Number(req.query.since || 0);
+
+    if (clientId) updateSession(room, clientId, role);
 
     const state = roomStates.get(room) || null;
     const controllersCount = getRoomControllersCount(room);
@@ -267,6 +381,7 @@ async function startServer() {
       commands
     });
   });
+
 
   // API Health Check
   app.get('/api/health', (_req, res) => {

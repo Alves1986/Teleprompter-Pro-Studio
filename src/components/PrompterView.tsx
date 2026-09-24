@@ -7,7 +7,7 @@ import CameraRecorder from './CameraRecorder';
 import VoiceFollowTracker from './VoiceFollowTracker';
 import RemotePairModal from './RemotePairModal';
 import ShortcutsModal, { DEFAULT_KEY_BINDINGS } from './ShortcutsModal';
-import { Pause, Play, Smartphone, ListOrdered, Clock, Download, X } from 'lucide-react';
+import { Pause, Play, Smartphone, ListOrdered, Clock, Download, X, ArrowLeft } from 'lucide-react';
 import { parseScriptBlocks, formatTime } from '../utils';
 import { useOrientation } from '../hooks/useOrientation';
 import { usePWAInstall } from '../hooks/usePWAInstall';
@@ -66,6 +66,12 @@ export default function PrompterView({
   const [cameraOpacity, setCameraOpacity] = useState(config.cameraOpacity || 35);
   const [isVoiceFollowActive, setIsVoiceFollowActive] = useState(config.voiceFollowEnabled || false);
   const [activeLineIndex, setActiveLineIndex] = useState(0);
+
+  const isVoiceFollowActiveRef = useRef(isVoiceFollowActive);
+  isVoiceFollowActiveRef.current = isVoiceFollowActive;
+  const voiceTargetScrollRef = useRef<number | null>(null);
+  const isVoiceSpeakingRef = useRef<boolean>(false);
+  const lastVoiceTimeRef = useRef<number>(0);
   const pwaState = usePWAInstall();
   const [isInstallGuideOpen, setIsInstallGuideOpen] = useState(false);
   const [showTabletTip, setShowTabletTip] = useState(!pwaState.isInstalled && (pwaState.isTablet || pwaState.isMobile));
@@ -329,11 +335,83 @@ export default function PrompterView({
     return classes.join(' ');
   };
 
-  // Content Renderer with visual cue markers
+  // Calculate precise scrollTop to align any line with the center guide marker
+  const getLineScrollPosition = useCallback((lineIdx: number, wordFraction = 0.5): number | null => {
+    if (!scrollRef.current) return null;
+    const lineEl = document.getElementById(`prompter-line-${lineIdx}`);
+    if (!lineEl) {
+      const totalLines = script.content.split('\n').length;
+      const { scrollHeight, clientHeight } = scrollRef.current;
+      const maxScroll = Math.max(1, scrollHeight - clientHeight);
+      return Math.max(0, Math.min(maxScroll, (lineIdx / Math.max(1, totalLines)) * maxScroll));
+    }
+
+    const container = scrollRef.current;
+    const containerRect = container.getBoundingClientRect();
+    const lineRect = lineEl.getBoundingClientRect();
+
+    // Relative distance from container top to line top
+    const relativeTop = lineRect.top - containerRect.top;
+    // Viewport reading guide center (50% of container height)
+    const containerCenter = containerRect.height / 2;
+    // Fractional point within the line itself
+    const clampedFraction = Math.max(0, Math.min(1, wordFraction));
+    const linePointOffset = lineRect.height * clampedFraction;
+
+    const currentScroll = container.scrollTop;
+    const targetScroll = currentScroll + relativeTop + linePointOffset - containerCenter;
+
+    const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+    return Math.max(0, Math.min(maxScroll, targetScroll));
+  }, [script.content]);
+
+  // Find the line element closest to the central reading line
+  const calculateActiveLineFromScroll = useCallback((): number => {
+    if (!scrollRef.current) return 0;
+    const container = scrollRef.current;
+    const containerRect = container.getBoundingClientRect();
+    const centerY = containerRect.top + containerRect.height / 2;
+
+    const totalLines = script.content.split('\n').length;
+    let closestLine = 0;
+    let minDiff = Infinity;
+
+    for (let i = 0; i < totalLines; i++) {
+      const el = document.getElementById(`prompter-line-${i}`);
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        const lineCenter = rect.top + rect.height / 2;
+        const diff = Math.abs(lineCenter - centerY);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closestLine = i;
+        }
+      }
+    }
+    return closestLine;
+  }, [script.content]);
+
+  // Voice progress handler from VoiceFollowTracker
+  const handleVoiceProgress = useCallback((data: { lineIndex: number; wordFraction: number; isSpeaking: boolean; transcript: string }) => {
+    setActiveLineIndex(data.lineIndex);
+    isVoiceSpeakingRef.current = data.isSpeaking;
+
+    if (data.isSpeaking) {
+      lastVoiceTimeRef.current = performance.now();
+      const target = getLineScrollPosition(data.lineIndex, data.wordFraction);
+      if (target !== null) {
+        voiceTargetScrollRef.current = target;
+      }
+    }
+  }, [getLineScrollPosition]);
+
+  // Content Renderer with visual cue markers and per-line DOM anchors
   const renderContent = (content: string) => {
     const lines = content.split('\n');
     return lines.map((line, i) => {
-      if (!line.trim()) return <br key={i} />;
+      if (!line.trim()) {
+        return <div key={i} id={`prompter-line-${i}`} data-line-idx={i} className="h-6" />;
+      }
       const parts = line.split(/(\[PAUSA\]|\[ÊNFASE:[^\]]+\]|\[CUE:[^\]]+\]|\[NOTA:[^\]]+\]|\[BLOCO:[^\]]+\])/g);
       
       const renderedParts = parts.map((part, j) => {
@@ -366,39 +444,83 @@ export default function PrompterView({
         }
         return <span key={j}>{part}</span>;
       });
-      return <div key={i} className="mb-4">{renderedParts}</div>;
+
+      const isCurrentSpokenLine = isVoiceFollowActive && activeLineIndex === i;
+
+      return (
+        <div 
+          key={i} 
+          id={`prompter-line-${i}`}
+          data-line-idx={i}
+          className={`mb-4 transition-all duration-300 rounded-xl px-3 -mx-3 ${
+            isCurrentSpokenLine 
+              ? 'bg-amber-500/10 border-l-4 border-amber-400 text-amber-200 font-medium shadow-lg scale-[1.01] origin-left' 
+              : ''
+          }`}
+        >
+          {renderedParts}
+        </div>
+      );
     });
   };
 
-  // Smooth Scroll Engine
+  const updateScrollMetrics = useCallback(() => {
+    if (!scrollRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+    const maxScroll = Math.max(1, scrollHeight - clientHeight);
+    const currProgress = (scrollTop / maxScroll) * 100;
+    setProgress(Math.min(100, Math.max(0, currProgress)));
+
+    const pixelsRemaining = maxScroll - scrollTop;
+    const pxPerSec = (configRef.current.speed || 2) * 20;
+    setEstimatedRemainingSeconds(pxPerSec > 0 ? pixelsRemaining / pxPerSec : 0);
+  }, []);
+
+  // Smooth Scroll Engine with Full Voice Follow Pacing Control
   const animate = useCallback((time: number) => {
-    if (lastTimeRef.current !== undefined && isPlaying && scrollRef.current) {
-      const delta = time - lastTimeRef.current;
-      const scrollAmount = (config.speed * 20) * (delta / 1000);
-      scrollRef.current.scrollTop += scrollAmount;
+    if (lastTimeRef.current !== undefined && scrollRef.current) {
+      const delta = Math.min(100, time - lastTimeRef.current);
+      const isVoiceActive = isVoiceFollowActiveRef.current;
+      const voiceTarget = voiceTargetScrollRef.current;
+      const isRecentlySpeaking = (performance.now() - lastVoiceTimeRef.current) < 1800;
 
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-      const maxScroll = Math.max(1, scrollHeight - clientHeight);
-      const currProgress = (scrollTop / maxScroll) * 100;
-      setProgress(Math.min(100, Math.max(0, currProgress)));
+      if (isVoiceActive && voiceTarget !== null) {
+        // Voice Follow actively governs the progress / scrolling
+        const currentScroll = scrollRef.current.scrollTop;
+        const diff = voiceTarget - currentScroll;
+        const absDiff = Math.abs(diff);
 
-      const pixelsRemaining = maxScroll - scrollTop;
-      const pxPerSec = config.speed * 20;
-      setEstimatedRemainingSeconds(pxPerSec > 0 ? pixelsRemaining / pxPerSec : 0);
+        if (absDiff > 1) {
+          // Dynamic smooth scroll interpolation to track spoken words smoothly
+          const speedMultiplier = absDiff > 400 ? 12 : absDiff > 150 ? 8 : 5;
+          const lerpStep = diff * Math.min(0.25, Math.max(0.04, (delta / 1000) * speedMultiplier));
+          scrollRef.current.scrollTop = currentScroll + lerpStep;
+        } else if (isRecentlySpeaking && isPlayingRef.current) {
+          // If actively speaking and play mode is also engaged, continue gentle forward roll
+          const scrollAmount = (configRef.current.speed * 16) * (delta / 1000);
+          scrollRef.current.scrollTop += scrollAmount;
+        }
 
-      // Estimate active line index
-      const totalLines = script.content.split('\n').length;
-      const approxLine = Math.floor((scrollTop / maxScroll) * totalLines);
-      setActiveLineIndex(approxLine);
+        updateScrollMetrics();
+      } else if (isPlayingRef.current) {
+        // Standard linear auto-scroll when Voice Follow is not driving
+        const scrollAmount = (configRef.current.speed * 20) * (delta / 1000);
+        scrollRef.current.scrollTop += scrollAmount;
+        updateScrollMetrics();
+
+        const approxLine = calculateActiveLineFromScroll();
+        setActiveLineIndex(approxLine);
+      }
     }
+
     lastTimeRef.current = time;
-    if (isPlaying) {
+    if (isPlayingRef.current || isVoiceFollowActiveRef.current) {
       requestRef.current = requestAnimationFrame(animate);
     }
-  }, [isPlaying, config.speed, script.content]);
+  }, [updateScrollMetrics, calculateActiveLineFromScroll]);
 
   useEffect(() => {
-    if (isPlaying) {
+    if (isPlaying || isVoiceFollowActive) {
       requestRef.current = requestAnimationFrame(animate);
     } else {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
@@ -407,34 +529,31 @@ export default function PrompterView({
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [isPlaying, animate]);
+  }, [isPlaying, isVoiceFollowActive, animate]);
 
   const handleManualScroll = () => {
-    if (scrollRef.current && !isPlaying) {
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-      const maxScroll = Math.max(1, scrollHeight - clientHeight);
-      setProgress(Math.min(100, Math.max(0, (scrollTop / maxScroll) * 100)));
-
-      const totalLines = script.content.split('\n').length;
-      const approxLine = Math.floor((scrollTop / maxScroll) * totalLines);
-      setActiveLineIndex(approxLine);
+    if (scrollRef.current) {
+      updateScrollMetrics();
+      const currentLine = calculateActiveLineFromScroll();
+      setActiveLineIndex(currentLine);
+      if (isVoiceFollowActiveRef.current) {
+        voiceTargetScrollRef.current = scrollRef.current.scrollTop;
+      }
     }
   };
 
-  // Jump to specific line (used by Voice Follow and Escaleta)
-  const jumpToLine = (targetLine: number) => {
-    if (scrollRef.current) {
-      const totalLines = script.content.split('\n').length;
-      const { scrollHeight, clientHeight } = scrollRef.current;
-      const maxScroll = Math.max(1, scrollHeight - clientHeight);
-      const targetScroll = (targetLine / Math.max(1, totalLines)) * maxScroll;
-      
+  // Jump to specific line (used by Voice Follow, Escaleta, and Remote)
+  const jumpToLine = useCallback((targetLine: number) => {
+    setActiveLineIndex(targetLine);
+    const targetScroll = getLineScrollPosition(targetLine, 0.2);
+    if (targetScroll !== null && scrollRef.current) {
+      voiceTargetScrollRef.current = targetScroll;
       scrollRef.current.scrollTo({
         top: targetScroll,
         behavior: 'smooth'
       });
     }
-  };
+  }, [getLineScrollPosition]);
 
   // Keyboard Shortcuts & Pedals (Dynamic Custom Mappings)
   useEffect(() => {
@@ -600,9 +719,22 @@ export default function PrompterView({
         onChangeOpacity={(op) => setCameraOpacity(op)}
       />
 
+      {/* Quick Top-Left Back / Close Button for Mobile & Desktop */}
+      <div className="absolute top-safe left-3 sm:left-6 z-40">
+        <button
+          onClick={onClose}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/75 hover:bg-black/90 active:bg-red-950/80 text-gray-200 hover:text-white border border-gray-700/80 backdrop-blur-md shadow-2xl text-xs font-semibold transition-all touch-manipulation cursor-pointer active:scale-95"
+          title="Fechar teleprompter e voltar ao editor"
+        >
+          <ArrowLeft size={14} />
+          <span className="hidden sm:inline">Voltar ao Editor</span>
+          <span className="sm:hidden">Sair</span>
+        </button>
+      </div>
+
       {/* Live Recording Pulsing Studio Badge */}
       {config.theme === AppTheme.STUDIO && isPlaying && (
-        <div className="absolute top-4 right-4 sm:top-8 sm:right-8 z-30 flex items-center gap-1.5 sm:gap-2 bg-red-600/10 border border-red-500/30 px-2.5 sm:px-3 py-0.5 sm:py-1 rounded-full animate-pulse backdrop-blur pt-safe">
+        <div className="absolute top-safe right-3 sm:right-6 z-30 flex items-center gap-1.5 sm:gap-2 bg-red-600/10 border border-red-500/30 px-2.5 sm:px-3 py-1 rounded-full animate-pulse backdrop-blur">
           <div className="w-2.5 h-2.5 sm:w-3 sm:h-3 bg-red-500 rounded-full"></div>
           <span className="text-red-500 font-bold tracking-widest text-xs sm:text-sm">NO AR</span>
         </div>
@@ -617,7 +749,7 @@ export default function PrompterView({
 
       {/* Time Remaining & Target Pacing Bar */}
       {config.showTimeRemaining && (
-        <div className="absolute top-3 sm:top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 sm:gap-2 max-w-[95%] pt-safe">
+        <div className="absolute top-safe left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 sm:gap-2 max-w-[95%]">
           <div className="bg-black/70 backdrop-blur px-2.5 sm:px-3 py-1 rounded-md text-amber-500 font-mono text-xs sm:text-sm shadow-xl border border-gray-800 flex items-center gap-1 sm:gap-1.5 shrink-0">
             <Clock size={12} />
             <span>-{formatRemainingTime()}</span>
@@ -690,8 +822,12 @@ export default function PrompterView({
       <VoiceFollowTracker
         isEnabled={isVoiceFollowActive}
         scriptContent={script.content}
-        onJumpToLine={jumpToLine}
-        onToggleVoice={(en) => setIsVoiceFollowActive(en)}
+        currentLineIndex={activeLineIndex}
+        onVoiceProgress={handleVoiceProgress}
+        onToggleVoice={(en) => {
+          setIsVoiceFollowActive(en);
+          onUpdateConfig({ voiceFollowEnabled: en });
+        }}
       />
 
       {/* Floating Action Buttons: Remote Quick-Pair & Escaleta & Play */}
@@ -805,7 +941,11 @@ export default function PrompterView({
         blocksCount={blocks.length}
         onToggleCamera={() => setIsCameraActive(!isCameraActive)}
         isCameraActive={isCameraActive}
-        onToggleVoiceFollow={() => setIsVoiceFollowActive(!isVoiceFollowActive)}
+        onToggleVoiceFollow={() => {
+          const next = !isVoiceFollowActive;
+          setIsVoiceFollowActive(next);
+          onUpdateConfig({ voiceFollowEnabled: next });
+        }}
         isVoiceFollowActive={isVoiceFollowActive}
         onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
         onOpenInstallGuide={() => setIsInstallGuideOpen(true)}
