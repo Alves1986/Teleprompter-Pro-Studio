@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   Mic, 
   MicOff, 
@@ -10,10 +10,13 @@ import {
   Video, 
   HelpCircle, 
   CheckCircle,
-  Gauge
+  Gauge,
+  Activity
 } from 'lucide-react';
 import { 
-  stripAllScriptMarkers, 
+  tokenizeScript,
+  ScriptWordToken,
+  ScriptLineToken,
   normalizeVoiceText, 
   PORTUGUESE_STOP_WORDS, 
   fuzzyWordMatch, 
@@ -25,9 +28,13 @@ export interface VoiceProgressData {
   wordFraction: number;
   isSpeaking: boolean;
   transcript: string;
-  cadenceWpm?: number;
-  cadenceRatio?: number;
-  cadenceQuality?: 'slow' | 'normal' | 'fast';
+  cadenceWpm: number;
+  cadenceRatio: number;
+  cadenceQuality: 'slow' | 'normal' | 'fast';
+  matchedGlobalWordIndex: number;
+  trechoStartWordIndex: number;
+  trechoEndWordIndex: number;
+  activeSnippet: string;
 }
 
 export type VoiceActionCommand = 'play' | 'pause' | 'speed_up' | 'speed_down' | 'restart';
@@ -36,24 +43,23 @@ interface Props {
   isEnabled: boolean;
   scriptContent: string;
   currentLineIndex: number;
+  currentWordIndex?: number;
   onVoiceProgress: (data: VoiceProgressData) => void;
   onToggleVoice: (enabled: boolean) => void;
   onVoiceCommand?: (cmd: VoiceActionCommand) => void;
   isCameraRecording?: boolean;
 }
 
-interface IndexedLine {
-  lineIndex: number;
-  rawText: string;
-  cleanText: string;
-  normalizedWords: string[];
-  wordCount: number;
+interface CadencePoint {
+  time: number;
+  wordIndex: number;
 }
 
 export default function VoiceFollowTracker({
   isEnabled,
   scriptContent,
   currentLineIndex,
+  currentWordIndex = 0,
   onVoiceProgress,
   onToggleVoice,
   onVoiceCommand,
@@ -63,6 +69,7 @@ export default function VoiceFollowTracker({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [lastTranscript, setLastTranscript] = useState('');
   const [activeMatchedLine, setActiveMatchedLine] = useState(currentLineIndex);
+  const [activeMatchedWord, setActiveMatchedWord] = useState(currentWordIndex);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [activeVoiceCommand, setActiveVoiceCommand] = useState<string | null>(null);
   const [showCommandsHelp, setShowCommandsHelp] = useState(false);
@@ -71,11 +78,12 @@ export default function VoiceFollowTracker({
   const [cadenceQuality, setCadenceQuality] = useState<'slow' | 'normal' | 'fast'>('normal');
 
   const recognitionRef = useRef<any>(null);
-  const indexedLinesRef = useRef<IndexedLine[]>([]);
+  const currentWordIdxRef = useRef<number>(currentWordIndex);
+  currentWordIdxRef.current = currentWordIndex;
+
   const currentLineIndexRef = useRef<number>(currentLineIndex);
   currentLineIndexRef.current = currentLineIndex;
 
-  const currentMatchLineRef = useRef<number>(currentLineIndex);
   const isEnabledRef = useRef<boolean>(isEnabled);
   isEnabledRef.current = isEnabled;
   const isListeningRef = useRef<boolean>(false);
@@ -86,9 +94,8 @@ export default function VoiceFollowTracker({
   const commandFeedbackTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastProcessedSpokenRef = useRef<string>('');
 
-  // Speech cadence tracking refs
-  const speechEventsRef = useRef<{ time: number; wordCount: number }[]>([]);
-  const lastCadenceTokensCountRef = useRef<number>(0);
+  // Rhythm and Speech cadence tracking refs
+  const cadenceHistoryRef = useRef<CadencePoint[]>([]);
   const currentCadenceWpmRef = useRef<number>(130);
   const currentCadenceRatioRef = useRef<number>(1.0);
 
@@ -97,36 +104,28 @@ export default function VoiceFollowTracker({
   const onVoiceCommandRef = useRef(onVoiceCommand);
   onVoiceCommandRef.current = onVoiceCommand;
 
+  // Tokenize the script into words and lines
+  const tokenized = useMemo(() => tokenizeScript(scriptContent), [scriptContent]);
+  const allWordsRef = useRef<ScriptWordToken[]>([]);
+  allWordsRef.current = tokenized.allWords;
+  const linesRef = useRef<ScriptLineToken[]>([]);
+  linesRef.current = tokenized.lines;
+
   // Sync external camera recording prop
   useEffect(() => {
     setIsCamRecordingInternal(isCameraRecording);
   }, [isCameraRecording]);
 
-  // Index and normalize lines from script content
+  // Keep internal word/line match in sync when external index jumps significantly (e.g. user dragged scroll)
   useEffect(() => {
-    const rawLines = scriptContent.split('\n');
-    const indexed: IndexedLine[] = rawLines.map((raw, idx) => {
-      const clean = stripAllScriptMarkers(raw);
-      const normalized = normalizeVoiceText(clean);
-      const words = normalized.split(' ').filter(w => w.length > 0);
-      return {
-        lineIndex: idx,
-        rawText: raw,
-        cleanText: clean,
-        normalizedWords: words,
-        wordCount: words.length
-      };
-    });
-    indexedLinesRef.current = indexed;
-  }, [scriptContent]);
-
-  // Keep internal match line in sync when external currentLineIndex jumps significantly
-  useEffect(() => {
-    if (Math.abs(currentLineIndex - currentMatchLineRef.current) > 2) {
-      currentMatchLineRef.current = currentLineIndex;
-      setActiveMatchedLine(currentLineIndex);
+    if (typeof currentWordIndex === 'number' && Math.abs(currentWordIndex - currentWordIdxRef.current) > 5) {
+      currentWordIdxRef.current = currentWordIndex;
+      setActiveMatchedWord(currentWordIndex);
+      if (allWordsRef.current[currentWordIndex]) {
+        setActiveMatchedLine(allWordsRef.current[currentWordIndex].lineIndex);
+      }
     }
-  }, [currentLineIndex]);
+  }, [currentWordIndex]);
 
   // Direct Voice Commands Parser (pausar, continuar, mais rápido, mais devagar, reiniciar)
   const checkVoiceCommands = useCallback((spokenText: string): boolean => {
@@ -195,68 +194,97 @@ export default function VoiceFollowTracker({
     return false;
   }, []);
 
-  // Sequence-based line matching algorithm with Portuguese fuzzy & inflection tolerance
-  const scoreLineMatch = useCallback((line: IndexedLine, spokenWords: string[]): { score: number; lastWordIdx: number; matchedWords: number } => {
-    if (line.normalizedWords.length === 0 || spokenWords.length === 0) {
-      return { score: 0, lastWordIdx: -1, matchedWords: 0 };
+  /**
+   * Search for the exact spoken passage (trecho) in the tokenized script.
+   * Compares candidate word windows with fuzzy Portuguese phonetic and inflection matching.
+   */
+  const findBestTrechoMatch = useCallback((
+    spokenTokens: string[], 
+    searchStart: number, 
+    searchEnd: number
+  ): { score: number; startIdx: number; endIdx: number; matchedWords: number } => {
+    const allWords = allWordsRef.current;
+    if (allWords.length === 0 || spokenTokens.length === 0) {
+      return { score: 0, startIdx: -1, endIdx: -1, matchedWords: 0 };
     }
 
-    let matchScore = 0;
-    let lastPos = -1;
-    let consecutiveMatches = 0;
-    let matchedWordsCount = 0;
+    const startBound = Math.max(0, searchStart);
+    const endBound = Math.min(allWords.length - 1, searchEnd);
 
-    for (let s = 0; s < spokenWords.length; s++) {
-      const sw = spokenWords[s];
-      if (sw.length < 2) continue;
-      const isStopWord = PORTUGUESE_STOP_WORDS.has(sw);
+    let bestScore = 0;
+    let bestStart = -1;
+    let bestEnd = -1;
+    let bestMatchedWords = 0;
 
-      let bestPos = -1;
-      let bestWordScore = 0;
+    // Slide candidate window across script words
+    for (let candidateStart = startBound; candidateStart <= endBound; candidateStart++) {
+      let currentScore = 0;
+      let consecutive = 0;
+      let matchedCount = 0;
+      let lastMatchedScriptPos = -1;
+      let firstMatchedScriptPos = -1;
 
-      // 1. Search forward from lastPos in the line (ordered sequence)
-      const startSearch = lastPos >= 0 ? lastPos + 1 : 0;
-      for (let p = startSearch; p < line.normalizedWords.length; p++) {
-        const lw = line.normalizedWords[p];
-        const match = fuzzyWordMatch(sw, lw);
-        if (match.matches) {
-          bestPos = p;
-          bestWordScore = match.score;
-          break;
-        }
-      }
+      // Try matching spoken tokens in order
+      let scriptScanPos = candidateStart;
+      for (let s = 0; s < spokenTokens.length; s++) {
+        const sw = spokenTokens[s];
+        if (sw.length < 2) continue;
+        const isStopWord = PORTUGUESE_STOP_WORDS.has(sw);
 
-      // 2. If not found forward, search full line with slight penalty
-      if (bestPos === -1 && startSearch > 0) {
-        for (let p = 0; p < line.normalizedWords.length; p++) {
-          const lw = line.normalizedWords[p];
-          const match = fuzzyWordMatch(sw, lw);
+        // Search in a narrow forward window of 4 script words from current scan
+        let foundWordPos = -1;
+        let wordScore = 0;
+        const lookahead = Math.min(allWords.length - 1, scriptScanPos + 4);
+
+        for (let p = scriptScanPos; p <= lookahead; p++) {
+          const tw = allWords[p].normalizedWord;
+          const match = fuzzyWordMatch(sw, tw);
           if (match.matches) {
-            bestPos = p;
-            bestWordScore = match.score * 0.8;
+            foundWordPos = p;
+            wordScore = match.score;
             break;
           }
         }
+
+        if (foundWordPos !== -1) {
+          matchedCount++;
+          if (firstMatchedScriptPos === -1) firstMatchedScriptPos = foundWordPos;
+
+          const baseWeight = isStopWord ? 0.45 : 1.85;
+          currentScore += baseWeight * wordScore;
+
+          // Sequential consecutive word bonus (creates high confidence on multi-word phrases)
+          if (lastMatchedScriptPos !== -1 && (foundWordPos === lastMatchedScriptPos + 1)) {
+            consecutive++;
+            currentScore += 2.8 * consecutive;
+          } else {
+            consecutive = 0;
+          }
+
+          lastMatchedScriptPos = foundWordPos;
+          scriptScanPos = foundWordPos + 1;
+        }
       }
 
-      if (bestPos !== -1) {
-        matchedWordsCount++;
-        const baseWeight = isStopWord ? 0.45 : 1.7;
-        matchScore += baseWeight * bestWordScore;
+      // Add proximity priority: candidates closer to current reading position are favored
+      const distFromCurrent = Math.abs(candidateStart - currentWordIdxRef.current);
+      const proximityMultiplier = 1.0 + Math.max(0, (15 - distFromCurrent) * 0.04);
+      const finalScore = currentScore * proximityMultiplier;
 
-        // Bigram and trigram bonuses for ordered consecutive words
-        if (lastPos !== -1 && (bestPos === lastPos + 1 || bestPos === lastPos + 2)) {
-          consecutiveMatches++;
-          matchScore += 3.2 * consecutiveMatches;
-        } else {
-          consecutiveMatches = 0;
-        }
-
-        lastPos = bestPos;
+      if (finalScore > bestScore && matchedCount >= 1) {
+        bestScore = finalScore;
+        bestStart = firstMatchedScriptPos !== -1 ? firstMatchedScriptPos : candidateStart;
+        bestEnd = lastMatchedScriptPos !== -1 ? lastMatchedScriptPos : candidateStart;
+        bestMatchedWords = matchedCount;
       }
     }
 
-    return { score: matchScore, lastWordIdx: lastPos, matchedWords: matchedWordsCount };
+    return { 
+      score: bestScore, 
+      startIdx: bestStart, 
+      endIdx: bestEnd, 
+      matchedWords: bestMatchedWords 
+    };
   }, []);
 
   const processSpeech = useCallback((spokenRaw: string) => {
@@ -265,7 +293,7 @@ export default function VoiceFollowTracker({
     if (!normalizedSpoken || normalizedSpoken === lastProcessedSpokenRef.current) return;
     lastProcessedSpokenRef.current = normalizedSpoken;
 
-    // First, test for direct voice action commands
+    // Check voice direct action commands first
     if (checkVoiceCommands(normalizedSpoken)) {
       return;
     }
@@ -273,158 +301,128 @@ export default function VoiceFollowTracker({
     const spokenTokens = normalizedSpoken.split(' ').filter(w => w.length > 0);
     if (spokenTokens.length === 0) return;
 
-    // Real-time speech cadence calculation (Words Per Minute / PPM)
-    const now = performance.now();
-    const tokenCount = spokenTokens.length;
-    const deltaWords = Math.max(1, tokenCount - lastCadenceTokensCountRef.current);
-    lastCadenceTokensCountRef.current = tokenCount;
+    const allWords = allWordsRef.current;
+    if (allWords.length === 0) return;
 
-    speechEventsRef.current.push({ time: now, wordCount: deltaWords });
-    // Keep sliding window of last 4.5 seconds of spoken events
-    speechEventsRef.current = speechEventsRef.current.filter(e => now - e.time <= 4500);
+    const curWord = currentWordIdxRef.current;
 
-    let calculatedWpm = currentCadenceWpmRef.current;
-    if (speechEventsRef.current.length >= 2) {
-      const windowStart = speechEventsRef.current[0].time;
-      const windowDurationSec = (now - windowStart) / 1000;
-      const totalWords = speechEventsRef.current.reduce((acc, e) => acc + e.wordCount, 0);
+    // 1. Primary search: Forward window around current reading position [curWord - 4, curWord + 35]
+    let matchResult = findBestTrechoMatch(spokenTokens.slice(-8), curWord - 4, curWord + 35);
 
-      if (windowDurationSec >= 0.8 && totalWords >= 2) {
-        const wordsPerSec = totalWords / windowDurationSec;
-        const rawWpm = wordsPerSec * 60;
-        const clampedWpm = Math.max(65, Math.min(230, Math.round(rawWpm)));
-        // Smooth exponential moving average (alpha = 0.35)
-        calculatedWpm = Math.round(currentCadenceWpmRef.current * 0.65 + clampedWpm * 0.35);
-        currentCadenceWpmRef.current = calculatedWpm;
+    // 2. Secondary search: Backward window in case user repeats or stumbles [curWord - 25, curWord]
+    if (matchResult.score < 2.0) {
+      const backResult = findBestTrechoMatch(spokenTokens.slice(-8), curWord - 25, curWord);
+      if (backResult.score > matchResult.score && backResult.score >= 1.8) {
+        matchResult = backResult;
       }
     }
 
-    // Teleprompter nominal baseline in Portuguese is ~130 WPM
-    const calculatedRatio = Math.max(0.65, Math.min(1.85, +(calculatedWpm / 130).toFixed(2)));
-    currentCadenceRatioRef.current = calculatedRatio;
-
-    let quality: 'slow' | 'normal' | 'fast' = 'normal';
-    if (calculatedWpm < 110) {
-      quality = 'slow';
-    } else if (calculatedWpm > 155) {
-      quality = 'fast';
-    } else {
-      quality = 'normal';
-    }
-
-    setLiveCadenceWpm(calculatedWpm);
-    setCadenceQuality(quality);
-
-    // Use the most recent 12 words (current phrase/utterance)
-    const recentSpoken = spokenTokens.slice(-12);
-    const displaySnippet = spokenTokens.slice(-5).join(' ');
-    setLastTranscript(displaySnippet);
-
-    const lines = indexedLinesRef.current;
-    if (lines.length === 0) return;
-
-    const curLine = currentLineIndexRef.current;
-    let bestLineIndex = -1;
-    let bestScore = 0;
-    let bestLastWordIdx = -1;
-
-    // Tier 1: Forward local window around current reading line [curLine, curLine + 12]
-    // Uses proximity weighting so lines immediately ahead have high priority
-    const forwardStart = Math.max(0, curLine);
-    const forwardEnd = Math.min(lines.length - 1, curLine + 12);
-
-    for (let i = forwardStart; i <= forwardEnd; i++) {
-      const candidate = lines[i];
-      if (!candidate || candidate.wordCount === 0) continue;
-
-      const { score, lastWordIdx } = scoreLineMatch(candidate, recentSpoken);
-      const distance = i - curLine;
-      const proximityMultiplier = 1.0 + Math.max(0, (6 - distance) * 0.06);
-      const adjustedScore = score * proximityMultiplier;
-
-      if (adjustedScore > bestScore && adjustedScore >= 1.2) {
-        bestScore = adjustedScore;
-        bestLineIndex = candidate.lineIndex;
-        bestLastWordIdx = lastWordIdx;
+    // 3. Global search: If reader jumped to another section
+    if (matchResult.score < 1.6) {
+      const globalResult = findBestTrechoMatch(spokenTokens.slice(-8), 0, allWords.length - 1);
+      if (globalResult.score >= 3.0) {
+        matchResult = globalResult;
       }
     }
 
-    // Tier 2: Backward local window [curLine - 3, curLine - 1] (in case speaker stumbles or re-reads)
-    if (bestScore < 2.5) {
-      const backStart = Math.max(0, curLine - 3);
-      for (let i = backStart; i < curLine; i++) {
-        const candidate = lines[i];
-        if (!candidate || candidate.wordCount === 0) continue;
+    // Confident match found!
+    if (matchResult.endIdx !== -1 && matchResult.score >= 1.0) {
+      const matchedEndWordIdx = matchResult.endIdx;
+      const matchedStartWordIdx = matchResult.startIdx;
+      const matchedWord = allWords[matchedEndWordIdx];
+      const lineIndex = matchedWord.lineIndex;
 
-        const { score, lastWordIdx } = scoreLineMatch(candidate, recentSpoken);
-        if (score > bestScore && score >= 2.0) {
-          bestScore = score;
-          bestLineIndex = candidate.lineIndex;
-          bestLastWordIdx = lastWordIdx;
+      // Real-time Reading Rhythm / Cadence (WPM / PPM) Calculation
+      const now = performance.now();
+      cadenceHistoryRef.current.push({ time: now, wordIndex: matchedEndWordIdx });
+      // Keep sliding window of last 4.5 seconds
+      cadenceHistoryRef.current = cadenceHistoryRef.current.filter(e => now - e.time <= 4500);
+
+      let calculatedWpm = currentCadenceWpmRef.current;
+      if (cadenceHistoryRef.current.length >= 2) {
+        const oldest = cadenceHistoryRef.current[0];
+        const elapsedSec = (now - oldest.time) / 1000;
+        const wordsPassed = matchedEndWordIdx - oldest.wordIndex;
+
+        if (elapsedSec >= 0.7 && wordsPassed >= 2) {
+          const instantWpm = (wordsPassed / elapsedSec) * 60;
+          const clamped = Math.max(70, Math.min(230, Math.round(instantWpm)));
+          // Smooth exponential moving average (alpha = 0.38)
+          calculatedWpm = Math.round(currentCadenceWpmRef.current * 0.62 + clamped * 0.38);
+          currentCadenceWpmRef.current = calculatedWpm;
         }
       }
-    }
 
-    // Tier 3: Global scan across entire script (requires higher confidence threshold)
-    if (bestScore < 2.0) {
-      for (let i = 0; i < lines.length; i++) {
-        if (i >= forwardStart && i <= forwardEnd) continue;
-        const candidate = lines[i];
-        if (!candidate || candidate.wordCount === 0) continue;
+      // Prompter nominal baseline in Portuguese is ~130 WPM
+      const calculatedRatio = Math.max(0.60, Math.min(1.90, +(calculatedWpm / 130).toFixed(2)));
+      currentCadenceRatioRef.current = calculatedRatio;
 
-        const { score, lastWordIdx } = scoreLineMatch(candidate, recentSpoken);
-        if (score > bestScore && score >= 3.2) {
-          bestScore = score;
-          bestLineIndex = candidate.lineIndex;
-          bestLastWordIdx = lastWordIdx;
-        }
+      let quality: 'slow' | 'normal' | 'fast' = 'normal';
+      if (calculatedWpm < 110) {
+        quality = 'slow';
+      } else if (calculatedWpm > 155) {
+        quality = 'fast';
+      } else {
+        quality = 'normal';
       }
-    }
 
-    // If a confident match was identified:
-    if (bestLineIndex !== -1 && bestScore >= 1.0) {
-      const targetLine = lines[bestLineIndex];
-      const wordFraction = (targetLine && targetLine.wordCount > 0 && bestLastWordIdx >= 0)
-        ? Math.min(0.95, (bestLastWordIdx + 1) / targetLine.wordCount)
-        : 0.1;
+      setLiveCadenceWpm(calculatedWpm);
+      setCadenceQuality(quality);
 
-      currentMatchLineRef.current = bestLineIndex;
-      setActiveMatchedLine(bestLineIndex);
+      currentWordIdxRef.current = matchedEndWordIdx;
+      setActiveMatchedWord(matchedEndWordIdx);
+      setActiveMatchedLine(lineIndex);
       setIsSpeaking(true);
 
-      // Notify parent to smoothly scroll the text to this position with cadence
+      const displaySnippet = spokenTokens.slice(-6).join(' ');
+      setLastTranscript(displaySnippet);
+
+      // Line progress fraction
+      const lineToken = linesRef.current[lineIndex];
+      const wordFraction = lineToken && lineToken.words.length > 0
+        ? Math.min(0.98, (matchedEndWordIdx - lineToken.startGlobalIdx + 1) / lineToken.words.length)
+        : 0.2;
+
+      // Broadcast precise word and trecho position with rhythm data
       onVoiceProgressRef.current({
-        lineIndex: bestLineIndex,
+        lineIndex,
         wordFraction,
         isSpeaking: true,
         transcript: displaySnippet,
         cadenceWpm: calculatedWpm,
         cadenceRatio: calculatedRatio,
-        cadenceQuality: quality
+        cadenceQuality: quality,
+        matchedGlobalWordIndex: matchedEndWordIdx,
+        trechoStartWordIndex: matchedStartWordIdx,
+        trechoEndWordIndex: matchedEndWordIdx,
+        activeSnippet: displaySnippet
       });
 
-      // Clear any pending silence timeout
+      // Clear any pending silence timer
       if (silenceTimerRef.current) {
         clearTimeout(silenceTimerRef.current);
       }
 
-      // If user stops speaking for 1.8 seconds, signal silence to pause the scroll
+      // If user pauses reading for 1.4s, gently pause the scrolling pace
       silenceTimerRef.current = setTimeout(() => {
         setIsSpeaking(false);
-        speechEventsRef.current = [];
-        lastCadenceTokensCountRef.current = 0;
+        cadenceHistoryRef.current = [];
         onVoiceProgressRef.current({
-          lineIndex: currentMatchLineRef.current,
-          wordFraction: 0,
+          lineIndex: lineIndex,
+          wordFraction,
           isSpeaking: false,
           transcript: '',
           cadenceWpm: currentCadenceWpmRef.current,
           cadenceRatio: 1.0,
-          cadenceQuality: 'normal'
+          cadenceQuality: 'normal',
+          matchedGlobalWordIndex: currentWordIdxRef.current,
+          trechoStartWordIndex: currentWordIdxRef.current,
+          trechoEndWordIndex: currentWordIdxRef.current,
+          activeSnippet: ''
         });
-      }, 1800);
+      }, 1400);
     }
-  }, [checkVoiceCommands, scoreLineMatch]);
+  }, [checkVoiceCommands, findBestTrechoMatch]);
 
   useEffect(() => {
     if (!isEnabled) {
@@ -478,7 +476,6 @@ export default function VoiceFollowTracker({
         recognition.onerror = (event: any) => {
           const err = event.error;
           if (err === 'no-speech') {
-            // Normal pause in speech: keep listening, do not display error
             return;
           }
           console.warn('Speech recognition status:', err);
@@ -487,8 +484,7 @@ export default function VoiceFollowTracker({
             setErrorMsg('Permissão de microfone negada. Clique no cadeado do navegador para permitir.');
             onToggleVoice(false);
           } else if (err === 'audio-capture') {
-            // Camera or OS audio device handover
-            setErrorMsg('Sincronizando áudio da câmera...');
+            setErrorMsg('Sincronizando áudio...');
             scheduleRestart(400);
           } else if (err === 'aborted') {
             scheduleRestart(250);
@@ -504,26 +500,21 @@ export default function VoiceFollowTracker({
           if (isStoppingRef.current || !isEnabledRef.current) {
             return;
           }
-          // Seamless restart on pause
           scheduleRestart(200);
         };
 
         recognition.onresult = (event: any) => {
-          let latestInterim = '';
-          let latestFinal = '';
-
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
+          // Accumulate the most recent recognized speech results (keeps context across phrase finals)
+          let combinedPhrase = '';
+          const startResultIdx = Math.max(0, event.results.length - 3);
+          for (let i = startResultIdx; i < event.results.length; ++i) {
             const transcript = event.results[i][0].transcript;
-            if (event.results[i].isFinal) {
-              latestFinal += transcript + ' ';
-            } else {
-              latestInterim += transcript + ' ';
-            }
+            combinedPhrase += transcript + ' ';
           }
 
-          const currentPhrase = (latestFinal + ' ' + latestInterim).trim();
-          if (currentPhrase) {
-            processSpeech(currentPhrase);
+          const trimmed = combinedPhrase.trim();
+          if (trimmed) {
+            processSpeech(trimmed);
           }
         };
 
@@ -545,14 +536,13 @@ export default function VoiceFollowTracker({
       }, delayMs);
     };
 
-    // Watchdog to ensure recognition stays active
+    // Keep recognition active
     const watchdog = setInterval(() => {
       if (isEnabledRef.current && !isStoppingRef.current && !isListeningRef.current) {
         initRecognition();
       }
     }, 2500);
 
-    // Listen to camera hardware events to prevent microphone collisions
     const handleCameraStreamToggle = () => {
       if (isEnabledRef.current && !isStoppingRef.current) {
         scheduleRestart(350);
@@ -634,7 +624,7 @@ export default function VoiceFollowTracker({
       };
       recognition.onresult = (event: any) => {
         let chunk = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
+        for (let i = Math.max(0, event.results.length - 3); i < event.results.length; ++i) {
           chunk += event.results[i][0].transcript + ' ';
         }
         processSpeech(chunk.trim());
@@ -647,6 +637,9 @@ export default function VoiceFollowTracker({
   };
 
   if (!isEnabled) return null;
+
+  const totalWords = allWordsRef.current.length;
+  const speedPercentDiff = Math.round((currentCadenceRatioRef.current - 1.0) * 100);
 
   return (
     <div className="fixed bottom-16 sm:bottom-20 left-3 sm:left-6 z-40 bg-[#0A0A0F]/95 backdrop-blur-md border border-indigo-500/50 rounded-2xl px-3.5 py-2.5 shadow-2xl flex flex-col gap-2 text-xs text-white max-w-[92vw] sm:max-w-md pointer-events-auto transition-all animate-fadeIn">
@@ -683,39 +676,47 @@ export default function VoiceFollowTracker({
           <div className="flex items-center gap-2 flex-wrap">
             <div className="text-[11px] uppercase font-bold tracking-wider text-indigo-400 flex items-center gap-1">
               <Sparkles size={12} className="text-amber-400" />
-              <span>Smart Follow (Voz)</span>
+              <span>Smart Voice Follow</span>
             </div>
 
-            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
+            {/* Trecho Lido Badge */}
+            <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
               isSpeaking 
-                ? 'bg-indigo-900/60 text-indigo-300 border border-indigo-700/60' 
+                ? 'bg-indigo-900/60 text-indigo-200 border border-indigo-700/60' 
                 : 'bg-gray-800 text-gray-400 border border-gray-700'
             }`}>
-              {isSpeaking ? `Linha ${activeMatchedLine + 1}` : 'Aguardando fala'}
+              {isSpeaking 
+                ? `Trecho: Palavra ${activeMatchedWord + 1}${totalWords > 0 ? `/${totalWords}` : ''} • L${activeMatchedLine + 1}` 
+                : 'Aguardando sua fala'}
             </span>
 
-            {/* Live Speech Cadence (WPM / PPM) Speed Matching Badge */}
+            {/* Live Speech Cadence (WPM / PPM) Speed Rhythm Badge */}
             <span
               className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 border transition-all ${
                 isSpeaking
                   ? cadenceQuality === 'fast'
-                    ? 'bg-amber-950/80 border-amber-500/80 text-amber-300'
+                    ? 'bg-amber-950/90 border-amber-500 text-amber-300'
                     : cadenceQuality === 'slow'
-                      ? 'bg-blue-950/80 border-blue-500/80 text-blue-300'
-                      : 'bg-emerald-950/80 border-emerald-500/80 text-emerald-300'
+                      ? 'bg-blue-950/90 border-blue-500 text-blue-300'
+                      : 'bg-emerald-950/90 border-emerald-500 text-emerald-300'
                   : 'bg-gray-800/90 border-gray-700 text-gray-400'
               }`}
-              title={`Cadência da fala: ${liveCadenceWpm} PPM (${cadenceQuality === 'fast' ? 'Acelerada' : cadenceQuality === 'slow' ? 'Pausada' : 'Ritmo Ideal'}). A velocidade de rolagem acompanha seu ritmo automaticamente.`}
+              title={`Ritmo da fala: ${liveCadenceWpm} PPM (${cadenceQuality === 'fast' ? 'Acelerado' : cadenceQuality === 'slow' ? 'Pausado' : 'Ritmo Ideal'}). A velocidade de rolagem acompanha seu ritmo automaticamente.`}
             >
               <Gauge size={10} className={isSpeaking ? (cadenceQuality === 'fast' ? 'text-amber-400 animate-pulse' : 'text-emerald-400') : 'text-gray-400'} />
               <span>{isSpeaking ? `${liveCadenceWpm} PPM` : '130 PPM'}</span>
+              {isSpeaking && speedPercentDiff !== 0 && (
+                <span className="text-[9px] opacity-80">
+                  ({speedPercentDiff > 0 ? `+${speedPercentDiff}%` : `${speedPercentDiff}%`})
+                </span>
+              )}
             </span>
 
             {/* Camera Sync Badge */}
             {isCamRecordingInternal && (
               <span className="text-[10px] px-1.5 py-0.2 rounded-full font-bold bg-red-950/80 border border-red-600/80 text-red-300 flex items-center gap-1 animate-pulse">
                 <Video size={10} className="text-red-400" />
-                <span>REC Sincronizado</span>
+                <span>REC</span>
               </span>
             )}
           </div>
@@ -730,12 +731,15 @@ export default function VoiceFollowTracker({
                 <>
                   <Volume2 size={11} className="text-indigo-400 shrink-0 animate-pulse" />
                   <span className="text-white font-medium truncate">"{lastTranscript}"</span>
-                  <span className="text-[10px] text-emerald-400 shrink-0 font-semibold">• Rolando</span>
+                  <span className="text-[10px] text-emerald-400 shrink-0 font-semibold flex items-center gap-0.5">
+                    <Activity size={10} className="animate-pulse" />
+                    <span>No ritmo</span>
+                  </span>
                 </>
               ) : isListening ? (
                 <>
                   <PauseCircle size={11} className="text-amber-400 shrink-0" />
-                  <span className="text-gray-400 truncate">Fale para o texto rolar automaticamente</span>
+                  <span className="text-gray-400 truncate">Leia o roteiro: o texto rola no seu ritmo</span>
                 </>
               ) : (
                 <span className="text-amber-400 truncate">Reconectando microfone...</span>
@@ -793,7 +797,7 @@ export default function VoiceFollowTracker({
             <div className="col-span-2">• <strong className="text-white">"Reiniciar"</strong> / "Voltar ao início"</div>
           </div>
           <span className="text-[9px] text-gray-400 mt-1 italic">
-            Além dos comandos, o texto rola continuamente conforme você lê o roteiro.
+            O teleprompter reconhece o trecho exato da sua leitura e ajusta a velocidade ao seu ritmo natural.
           </span>
         </div>
       )}

@@ -9,7 +9,7 @@ import RemotePairModal from './RemotePairModal';
 import ShortcutsModal, { DEFAULT_KEY_BINDINGS } from './ShortcutsModal';
 import BluetoothVerifierModal from './BluetoothVerifierModal';
 import { Pause, Play, Smartphone, ListOrdered, Clock, Download, X, ArrowLeft } from 'lucide-react';
-import { parseScriptBlocks, formatTime } from '../utils';
+import { parseScriptBlocks, formatTime, tokenizeScript } from '../utils';
 import { useOrientation } from '../hooks/useOrientation';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import InstallGuideModal from './InstallGuideModal';
@@ -71,6 +71,12 @@ export default function PrompterView({
   const [isCameraRecording, setIsCameraRecording] = useState(false);
   const [isVoiceFollowActive, setIsVoiceFollowActive] = useState(config.voiceFollowEnabled || false);
   const [activeLineIndex, setActiveLineIndex] = useState(0);
+  const [activeWordIndex, setActiveWordIndex] = useState(0);
+  const [activeTrecho, setActiveTrecho] = useState<{ startIdx: number; endIdx: number }>({ startIdx: 0, endIdx: 0 });
+  const [isVoiceSpeakingState, setIsVoiceSpeakingState] = useState(false);
+
+  // Parse tokenized script with word tokens and line structures
+  const tokenized = useMemo(() => tokenizeScript(script.content), [script.content]);
 
   const isVoiceFollowActiveRef = useRef(isVoiceFollowActive);
   isVoiceFollowActiveRef.current = isVoiceFollowActive;
@@ -159,9 +165,13 @@ export default function PrompterView({
   // Broadcast state to remote controllers
   const syncStateToRemote = useCallback((override?: Partial<{ isPlaying: boolean; speed: number; fontSize: number; progressPercent: number }>) => {
     if (remoteClientRef.current) {
+      const dynamicSpeed = (isVoiceFollowActiveRef.current && smoothedCadenceRatioRef.current)
+        ? +(configRef.current.speed * smoothedCadenceRatioRef.current).toFixed(1)
+        : (override?.speed !== undefined ? override.speed : configRef.current.speed);
+
       remoteClientRef.current.syncState({
         isPlaying: override?.isPlaying !== undefined ? override.isPlaying : isPlayingRef.current,
-        speed: override?.speed !== undefined ? override.speed : configRef.current.speed,
+        speed: dynamicSpeed,
         fontSize: override?.fontSize !== undefined ? override.fontSize : configRef.current.fontSize,
         progressPercent: override?.progressPercent !== undefined ? override.progressPercent : progressRef.current,
         scriptTitle: script.title,
@@ -396,8 +406,8 @@ export default function PrompterView({
 
     // Relative distance from container top to line top
     const relativeTop = lineRect.top - containerRect.top;
-    // Viewport reading guide center (50% of container height)
-    const containerCenter = containerRect.height / 2;
+    // Viewport reading guide center (45% of container height for eye line)
+    const containerCenter = containerRect.height * 0.45;
     // Fractional point within the line itself
     const clampedFraction = Math.max(0, Math.min(1, wordFraction));
     const linePointOffset = lineRect.height * clampedFraction;
@@ -409,12 +419,31 @@ export default function PrompterView({
     return Math.max(0, Math.min(maxScroll, targetScroll));
   }, [script.content]);
 
+  // Calculate precise scrollTop to align any specific word with the central reading guide (45% eye-line)
+  const getWordScrollPosition = useCallback((wordIdx: number): number | null => {
+    if (!scrollRef.current) return null;
+    const wordEl = document.getElementById(`prompter-word-${wordIdx}`);
+    if (!wordEl) return null;
+
+    const container = scrollRef.current;
+    const containerRect = container.getBoundingClientRect();
+    const wordRect = wordEl.getBoundingClientRect();
+
+    const currentScroll = container.scrollTop;
+    const relativeTop = wordRect.top - containerRect.top;
+    const containerGuide = containerRect.height * 0.45;
+
+    const targetScroll = currentScroll + relativeTop - containerGuide;
+    const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+    return Math.max(0, Math.min(maxScroll, targetScroll));
+  }, []);
+
   // Find the line element closest to the central reading line
   const calculateActiveLineFromScroll = useCallback((): number => {
     if (!scrollRef.current) return 0;
     const container = scrollRef.current;
     const containerRect = container.getBoundingClientRect();
-    const centerY = containerRect.top + containerRect.height / 2;
+    const centerY = containerRect.top + containerRect.height * 0.45;
 
     const totalLines = script.content.split('\n').length;
     let closestLine = 0;
@@ -435,7 +464,7 @@ export default function PrompterView({
     return closestLine;
   }, [script.content]);
 
-  // Voice progress handler from VoiceFollowTracker with real-time speech cadence
+  // Voice progress handler from VoiceFollowTracker with real-time speech cadence and exact word/trecho
   const handleVoiceProgress = useCallback((data: { 
     lineIndex: number; 
     wordFraction: number; 
@@ -444,9 +473,14 @@ export default function PrompterView({
     cadenceWpm?: number;
     cadenceRatio?: number;
     cadenceQuality?: 'slow' | 'normal' | 'fast';
+    matchedGlobalWordIndex?: number;
+    trechoStartWordIndex?: number;
+    trechoEndWordIndex?: number;
+    activeSnippet?: string;
   }) => {
     setActiveLineIndex(data.lineIndex);
     isVoiceSpeakingRef.current = data.isSpeaking;
+    setIsVoiceSpeakingState(data.isSpeaking);
 
     if (typeof data.cadenceRatio === 'number') {
       voiceCadenceRatioRef.current = data.cadenceRatio;
@@ -455,14 +489,29 @@ export default function PrompterView({
       liveCadenceWpmRef.current = data.cadenceWpm;
     }
 
+    if (typeof data.matchedGlobalWordIndex === 'number' && data.matchedGlobalWordIndex >= 0) {
+      setActiveWordIndex(data.matchedGlobalWordIndex);
+      setActiveTrecho({
+        startIdx: typeof data.trechoStartWordIndex === 'number' ? data.trechoStartWordIndex : data.matchedGlobalWordIndex,
+        endIdx: typeof data.trechoEndWordIndex === 'number' ? data.trechoEndWordIndex : data.matchedGlobalWordIndex
+      });
+    }
+
     if (data.isSpeaking) {
       lastVoiceTimeRef.current = performance.now();
-      const target = getLineScrollPosition(data.lineIndex, data.wordFraction);
+      // Target specific word scroll position if available, fallback to line position
+      let target: number | null = null;
+      if (typeof data.matchedGlobalWordIndex === 'number' && data.matchedGlobalWordIndex >= 0) {
+        target = getWordScrollPosition(data.matchedGlobalWordIndex);
+      }
+      if (target === null) {
+        target = getLineScrollPosition(data.lineIndex, data.wordFraction);
+      }
       if (target !== null) {
         voiceTargetScrollRef.current = target;
       }
     }
-  }, [getLineScrollPosition]);
+  }, [getLineScrollPosition, getWordScrollPosition]);
 
   // Voice direct commands dispatcher (pausar, continuar, velocidade, reiniciar)
   const handleVoiceCommand = useCallback((cmd: 'play' | 'pause' | 'speed_up' | 'speed_down' | 'restart') => {
@@ -505,50 +554,133 @@ export default function PrompterView({
     }
   }, [isVoiceFollowActive]);
 
-  // Content Renderer with visual cue markers and per-line DOM anchors
+  // Render non-spoken cue cards, pauses, notes, and block headers
+  const renderMarkerParts = (rawLine: string) => {
+    const upper = rawLine.trim().toUpperCase();
+    if (upper === '[PAUSA]') {
+      return (
+        <div className="my-10 border-t border-amber-500 flex justify-center">
+          <Pause className="w-8 h-8 text-amber-500 -mt-4 bg-inherit px-2" />
+        </div>
+      );
+    }
+    if (upper.startsWith('[CUE:')) {
+      const colonIdx = rawLine.indexOf(':');
+      return (
+        <div className="float-right clear-right bg-blue-900/40 text-blue-300 p-3 rounded-lg text-sm w-64 ml-8 mb-4 border border-blue-500 shadow-xl" style={{fontSize: 'max(14px, 0.4em)'}}>
+          {rawLine.slice(colonIdx + 1, -1).trim()}
+        </div>
+      );
+    }
+    if (upper.startsWith('[NOTA:')) {
+      const colonIdx = rawLine.indexOf(':');
+      return <span className="text-gray-500 italic block my-4" style={{fontSize: 'max(16px, 0.6em)'}}>{rawLine.slice(colonIdx + 1, -1).trim()}</span>;
+    }
+    if (upper.startsWith('[BLOCO:') || upper.startsWith('[SEÇÃO:') || upper.startsWith('[SECAO:') || upper.startsWith('[SEGMENTO:')) {
+      const colonIdx = rawLine.indexOf(':');
+      return (
+        <div className="my-6 border-l-4 border-amber-500 pl-3 py-1 bg-amber-500/10 text-amber-400 font-bold text-sm tracking-wider uppercase">
+          {rawLine.slice(colonIdx + 1, -1).trim()}
+        </div>
+      );
+    }
+    return <span>{rawLine}</span>;
+  };
+
+  // Render spoken words with granular word-level and trecho-level tracking
+  const renderLineTokens = (lineIdx: number, rawLine: string) => {
+    const lineToken = tokenized.lines[lineIdx];
+    if (!lineToken || lineToken.words.length === 0) {
+      return renderMarkerParts(rawLine);
+    }
+
+    const parts = rawLine.split(/(\[(?:PAUSA|ÊNFASE|ENFASE|CUE|NOTA|BLOCO|SEÇÃO|SECAO|SEGMENTO)(?::[^\]]+)?\])/gi);
+    let wordPointer = lineToken.startGlobalIdx;
+
+    return parts.map((part, pIdx) => {
+      if (!part) return null;
+      const upper = part.toUpperCase();
+
+      if (upper === '[PAUSA]') {
+        return (
+          <div key={pIdx} className="my-10 border-t border-amber-500 flex justify-center">
+            <Pause className="w-8 h-8 text-amber-500 -mt-4 bg-inherit px-2" />
+          </div>
+        );
+      }
+      if (upper.startsWith('[CUE:')) {
+        const colonIdx = part.indexOf(':');
+        return (
+          <div key={pIdx} className="float-right clear-right bg-blue-900/40 text-blue-300 p-3 rounded-lg text-sm w-64 ml-8 mb-4 border border-blue-500 shadow-xl" style={{fontSize: 'max(14px, 0.4em)'}}>
+            {part.slice(colonIdx + 1, -1).trim()}
+          </div>
+        );
+      }
+      if (upper.startsWith('[NOTA:')) {
+        const colonIdx = part.indexOf(':');
+        return <span key={pIdx} className="text-gray-500 italic block my-4" style={{fontSize: 'max(16px, 0.6em)'}}>{part.slice(colonIdx + 1, -1).trim()}</span>;
+      }
+      if (upper.startsWith('[BLOCO:') || upper.startsWith('[SEÇÃO:') || upper.startsWith('[SECAO:') || upper.startsWith('[SEGMENTO:')) {
+        const colonIdx = part.indexOf(':');
+        return (
+          <div key={pIdx} className="my-6 border-l-4 border-amber-500 pl-3 py-1 bg-amber-500/10 text-amber-400 font-bold text-sm tracking-wider uppercase">
+            {part.slice(colonIdx + 1, -1).trim()}
+          </div>
+        );
+      }
+
+      const isEmphasis = upper.startsWith('[ÊNFASE:') || upper.startsWith('[ENFASE:');
+      let textToRender = part;
+      if (isEmphasis) {
+        const colonIdx = part.indexOf(':');
+        textToRender = part.slice(colonIdx + 1, -1).trim();
+      }
+
+      const rawWords = textToRender.split(/\s+/).filter(Boolean);
+
+      return (
+        <span key={pIdx} className={isEmphasis ? 'font-bold' : ''}>
+          {rawWords.map((rw, rwIdx) => {
+            const currentWordIdx = wordPointer++;
+            const isWordInActiveTrecho = isVoiceFollowActive && isVoiceSpeakingState && (
+              currentWordIdx >= activeTrecho.startIdx - 1 &&
+              currentWordIdx <= activeTrecho.endIdx + 1
+            );
+            const isWordRead = isVoiceFollowActive && (
+              currentWordIdx < (isVoiceSpeakingState ? activeTrecho.startIdx - 1 : activeWordIndex)
+            );
+
+            return (
+              <span
+                key={`${lineIdx}-${currentWordIdx}-${rwIdx}`}
+                id={`prompter-word-${currentWordIdx}`}
+                data-word-idx={currentWordIdx}
+                className={`transition-all duration-150 inline-block mr-[0.28em] ${
+                  isWordInActiveTrecho
+                    ? 'bg-amber-400/25 text-amber-200 font-bold px-1.5 py-0.5 rounded-lg border-b-2 border-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.4)] scale-[1.03]'
+                    : isWordRead
+                      ? 'text-gray-400/60'
+                      : isEmphasis
+                        ? 'text-amber-400 font-bold'
+                        : ''
+                }`}
+              >
+                {rw}
+              </span>
+            );
+          })}
+        </span>
+      );
+    });
+  };
+
+  // Content Renderer with visual cue markers and granular per-word DOM anchors
   const renderContent = (content: string) => {
     const lines = content.split('\n');
     return lines.map((line, i) => {
       if (!line.trim()) {
         return <div key={i} id={`prompter-line-${i}`} data-line-idx={i} className="h-6" />;
       }
-      const parts = line.split(/(\[(?:PAUSA|ÊNFASE|ENFASE|CUE|NOTA|BLOCO|SEÇÃO|SECAO|SEGMENTO)(?::[^\]]+)?\])/gi);
-      
-      const renderedParts = parts.map((part, j) => {
-        const upper = part.toUpperCase();
-        if (upper === '[PAUSA]') {
-          return (
-            <div key={j} className="my-10 border-t border-amber-500 flex justify-center">
-              <Pause className="w-8 h-8 text-amber-500 -mt-4 bg-inherit px-2" />
-            </div>
-          );
-        }
-        if (upper.startsWith('[ÊNFASE:') || upper.startsWith('[ENFASE:')) {
-          const colonIdx = part.indexOf(':');
-          return <strong key={j} className="text-amber-400 font-bold">{part.slice(colonIdx + 1, -1).trim()}</strong>;
-        }
-        if (upper.startsWith('[CUE:')) {
-          const colonIdx = part.indexOf(':');
-          return (
-            <div key={j} className="float-right clear-right bg-blue-900/40 text-blue-300 p-3 rounded-lg text-sm w-64 ml-8 mb-4 border border-blue-500 shadow-xl" style={{fontSize: 'max(14px, 0.4em)'}}>
-              {part.slice(colonIdx + 1, -1).trim()}
-            </div>
-          );
-        }
-        if (upper.startsWith('[NOTA:')) {
-          const colonIdx = part.indexOf(':');
-          return <span key={j} className="text-gray-500 italic block my-4" style={{fontSize: 'max(16px, 0.6em)'}}>{part.slice(colonIdx + 1, -1).trim()}</span>;
-        }
-        if (upper.startsWith('[BLOCO:') || upper.startsWith('[SEÇÃO:') || upper.startsWith('[SECAO:') || upper.startsWith('[SEGMENTO:')) {
-          const colonIdx = part.indexOf(':');
-          return (
-            <div key={j} className="my-6 border-l-4 border-amber-500 pl-3 py-1 bg-amber-500/10 text-amber-400 font-bold text-sm tracking-wider uppercase">
-              {part.slice(colonIdx + 1, -1).trim()}
-            </div>
-          );
-        }
-        return <span key={j}>{part}</span>;
-      });
 
       const isCurrentSpokenLine = isVoiceFollowActive && activeLineIndex === i;
 
@@ -559,11 +691,11 @@ export default function PrompterView({
           data-line-idx={i}
           className={`mb-4 transition-all duration-300 rounded-xl px-3 -mx-3 ${
             isCurrentSpokenLine 
-              ? 'bg-amber-500/10 border-l-4 border-amber-400 text-amber-200 font-medium shadow-lg scale-[1.01] origin-left' 
+              ? 'border-l-4 border-amber-400/80 pl-3 bg-amber-500/[0.04]' 
               : ''
           }`}
         >
-          {renderedParts}
+          {renderLineTokens(i, line)}
         </div>
       );
     });
@@ -581,45 +713,49 @@ export default function PrompterView({
     setEstimatedRemainingSeconds(pxPerSec > 0 ? pixelsRemaining / pxPerSec : 0);
   }, []);
 
-  // Smooth Scroll Engine with Full Voice Follow Pacing Control
+  // Smooth Scroll Engine with Voice Follow Speech Rhythm & Cadence Control
   const animate = useCallback((time: number) => {
     if (lastTimeRef.current !== undefined && scrollRef.current) {
       const delta = Math.min(100, time - lastTimeRef.current);
       const isVoiceActive = isVoiceFollowActiveRef.current;
       const voiceTarget = voiceTargetScrollRef.current;
-      const isSpeakingNow = isVoiceSpeakingRef.current || (performance.now() - lastVoiceTimeRef.current) < 2200;
+      const isSpeakingNow = isVoiceSpeakingRef.current || (performance.now() - lastVoiceTimeRef.current) < 1400;
 
       if (isVoiceActive) {
         const currentScroll = scrollRef.current.scrollTop;
 
-        // Smoothly interpolate speech cadence ratio (avoids sudden velocity jumps)
+        // Smoothly interpolate speech cadence ratio matching voice rhythm
         const targetCadence = voiceCadenceRatioRef.current;
-        const lerpCadenceFactor = Math.min(1.0, (delta / 1000) * 3.5);
+        const lerpCadenceFactor = Math.min(1.0, (delta / 1000) * 4.0);
         smoothedCadenceRatioRef.current += (targetCadence - smoothedCadenceRatioRef.current) * lerpCadenceFactor;
 
         // Dynamically match forward pace to detected real-time speech cadence
         const baseSpeed = Math.max(1.5, configRef.current.speed || 2);
-        const cadenceSpeedMultiplier = smoothedCadenceRatioRef.current;
+        const cadenceSpeedMultiplier = Math.max(0.6, Math.min(2.2, smoothedCadenceRatioRef.current));
         const matchedForwardPace = baseSpeed * cadenceSpeedMultiplier * 20;
 
-        if (voiceTarget !== null) {
-          const diff = voiceTarget - currentScroll;
-          const absDiff = Math.abs(diff);
+        if (isSpeakingNow) {
+          // Continuous scroll driven directly by voice cadence
+          let scrollDelta = matchedForwardPace * (delta / 1000);
 
-          if (absDiff > 4) {
-            // Dynamic smooth scroll interpolation to track spoken words smoothly
-            const speedMultiplier = absDiff > 500 ? 14 : absDiff > 200 ? 9 : absDiff > 60 ? 6 : 3.5;
-            const lerpStep = diff * Math.min(0.3, Math.max(0.05, (delta / 1000) * speedMultiplier));
-            scrollRef.current.scrollTop = currentScroll + lerpStep;
-          } else if (isSpeakingNow || isPlayingRef.current) {
-            // Continually advance text matching the detected speech cadence in real-time
-            const scrollAmount = matchedForwardPace * (delta / 1000);
-            scrollRef.current.scrollTop = currentScroll + scrollAmount;
-            voiceTargetScrollRef.current = scrollRef.current.scrollTop;
+          // If we have a target word scroll position, apply gentle spring correction to center the active trecho
+          if (voiceTarget !== null) {
+            const diff = voiceTarget - currentScroll;
+            const absDiff = Math.abs(diff);
+
+            if (absDiff > 1.5) {
+              const trackingFactor = absDiff > 200 ? 7.0 : absDiff > 60 ? 4.5 : 2.5;
+              const lerpStep = diff * Math.min(0.25, (delta / 1000) * trackingFactor);
+              scrollDelta += lerpStep;
+            }
           }
-        } else if (isSpeakingNow || isPlayingRef.current) {
-          // If voice active but no specific target yet, start rolling matched to speech rate
-          scrollRef.current.scrollTop = currentScroll + (matchedForwardPace * (delta / 1000));
+
+          const maxScroll = Math.max(0, scrollRef.current.scrollHeight - scrollRef.current.clientHeight);
+          const nextScroll = Math.max(0, Math.min(maxScroll, currentScroll + scrollDelta));
+          scrollRef.current.scrollTop = nextScroll;
+          voiceTargetScrollRef.current = nextScroll;
+        } else {
+          // Voice paused/silent: hold smoothly right at current position without drifting
         }
 
         updateScrollMetrics();
@@ -661,6 +797,12 @@ export default function PrompterView({
       setActiveLineIndex(currentLine);
       if (isVoiceFollowActiveRef.current) {
         voiceTargetScrollRef.current = scrollRef.current.scrollTop;
+        const lineToken = tokenized.lines[currentLine];
+        if (lineToken && lineToken.words.length > 0) {
+          const firstWordIdx = lineToken.startGlobalIdx;
+          setActiveWordIndex(firstWordIdx);
+          setActiveTrecho({ startIdx: firstWordIdx, endIdx: firstWordIdx });
+        }
       }
     }
   };
@@ -668,6 +810,22 @@ export default function PrompterView({
   // Jump to specific line (used by Voice Follow, Escaleta, and Remote)
   const jumpToLine = useCallback((targetLine: number) => {
     setActiveLineIndex(targetLine);
+    const lineToken = tokenized.lines[targetLine];
+    if (lineToken && lineToken.words.length > 0) {
+      const firstWordIdx = lineToken.startGlobalIdx;
+      setActiveWordIndex(firstWordIdx);
+      setActiveTrecho({ startIdx: firstWordIdx, endIdx: firstWordIdx });
+      const targetScroll = getWordScrollPosition(firstWordIdx);
+      if (targetScroll !== null && scrollRef.current) {
+        voiceTargetScrollRef.current = targetScroll;
+        scrollRef.current.scrollTo({
+          top: targetScroll,
+          behavior: 'smooth'
+        });
+        return;
+      }
+    }
+
     const targetScroll = getLineScrollPosition(targetLine, 0.2);
     if (targetScroll !== null && scrollRef.current) {
       voiceTargetScrollRef.current = targetScroll;
@@ -676,7 +834,7 @@ export default function PrompterView({
         behavior: 'smooth'
       });
     }
-  }, [getLineScrollPosition]);
+  }, [getLineScrollPosition, getWordScrollPosition, tokenized.lines]);
 
   // Keyboard Shortcuts & Pedals (Dynamic Custom Mappings)
   useEffect(() => {
@@ -969,6 +1127,7 @@ export default function PrompterView({
         isEnabled={isVoiceFollowActive}
         scriptContent={script.content}
         currentLineIndex={activeLineIndex}
+        currentWordIndex={activeWordIndex}
         onVoiceProgress={handleVoiceProgress}
         onVoiceCommand={handleVoiceCommand}
         isCameraRecording={isCameraRecording}

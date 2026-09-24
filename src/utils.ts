@@ -1,15 +1,136 @@
 import { TextStats } from './types';
 
+export interface ScriptWordToken {
+  globalIndex: number;
+  lineIndex: number;
+  wordIndexInLine: number;
+  rawWord: string;
+  cleanWord: string;
+  normalizedWord: string;
+  isEmphasis?: boolean;
+}
+
+export interface ScriptLineToken {
+  lineIndex: number;
+  rawText: string;
+  words: ScriptWordToken[];
+  startGlobalIdx: number;
+  endGlobalIdx: number;
+  isMarkerOnly: boolean;
+}
+
+export interface TokenizedScript {
+  allWords: ScriptWordToken[];
+  lines: ScriptLineToken[];
+}
+
 export const stripMarkers = (text: string) => {
-  return text.replace(/\[(PAUSA|CUE|NOTA|ÊNFASE|BLOCO|SEÇÃO|SEGMENTO)(?::.*?)?\]/gi, '');
+  return text
+    .replace(/\[(?:ÊNFASE|ENFASE):\s*(.*?)\]/gi, '$1')
+    .replace(/\[(PAUSA|CUE|NOTA|BLOCO|SEÇÃO|SECAO|SEGMENTO)(?::.*?)?\]/gi, '');
 };
 
 export const stripAllScriptMarkers = (text: string): string => {
   return text
-    .replace(/\[(?:PAUSA|CUE|NOTA|ÊNFASE|BLOCO|SEÇÃO|SEGMENTO)(?::.*?)?\]/gi, ' ')
+    .replace(/\[(?:ÊNFASE|ENFASE):\s*(.*?)\]/gi, '$1')
+    .replace(/\[(?:PAUSA|CUE|NOTA|BLOCO|SEÇÃO|SECAO|SEGMENTO)(?::.*?)?\]/gi, ' ')
     .replace(/^#+\s+/gm, '') // markdown headings
     .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1') // markdown bold/italic
     .replace(/_{1,3}([^_]+)_{1,3}/g, '$1');
+};
+
+export const tokenizeScript = (content: string): TokenizedScript => {
+  if (!content) return { allWords: [], lines: [] };
+
+  const rawLines = content.split('\n');
+  const allWords: ScriptWordToken[] = [];
+  const lines: ScriptLineToken[] = [];
+
+  let globalWordCounter = 0;
+
+  for (let lineIdx = 0; lineIdx < rawLines.length; lineIdx++) {
+    const rawLine = rawLines[lineIdx];
+    const trimmed = rawLine.trim();
+
+    // Check if whole line is non-spoken cue/marker
+    const isPureMarker = /^\[(?:PAUSA|CUE|NOTA|BLOCO|SEÇÃO|SECAO|SEGMENTO)(?::.*?)?\]$/i.test(trimmed);
+
+    if (!trimmed || isPureMarker) {
+      lines.push({
+        lineIndex: lineIdx,
+        rawText: rawLine,
+        words: [],
+        startGlobalIdx: globalWordCounter,
+        endGlobalIdx: globalWordCounter,
+        isMarkerOnly: isPureMarker
+      });
+      continue;
+    }
+
+    const lineWords: ScriptWordToken[] = [];
+    const startIdxForLine = globalWordCounter;
+
+    // Parse parts of the line to distinguish emphasis text from non-spoken cues and plain text
+    const parts = rawLine.split(/(\[(?:PAUSA|ÊNFASE|ENFASE|CUE|NOTA|BLOCO|SEÇÃO|SECAO|SEGMENTO)(?::[^\]]+)?\])/gi);
+
+    for (const part of parts) {
+      if (!part) continue;
+      const upper = part.toUpperCase();
+
+      if (upper.startsWith('[ÊNFASE:') || upper.startsWith('[ENFASE:')) {
+        const colonIdx = part.indexOf(':');
+        const inner = part.slice(colonIdx + 1, -1).trim();
+        const tokens = inner.split(/\s+/).filter(Boolean);
+        for (const token of tokens) {
+          const clean = token.replace(/^[^\w\u00C0-\u017F]+|[^\w\u00C0-\u017F]+$/g, '');
+          const normalized = normalizeVoiceText(clean);
+          const wordToken: ScriptWordToken = {
+            globalIndex: globalWordCounter++,
+            lineIndex: lineIdx,
+            wordIndexInLine: lineWords.length,
+            rawWord: token,
+            cleanWord: clean,
+            normalizedWord: normalized,
+            isEmphasis: true
+          };
+          lineWords.push(wordToken);
+          allWords.push(wordToken);
+        }
+      } else if (upper.startsWith('[') && upper.endsWith(']')) {
+        // Other markers ([PAUSA], [CUE:...], [NOTA:...], [BLOCO:...]) are non-spoken
+        continue;
+      } else {
+        // Plain text part
+        const tokens = part.split(/\s+/).filter(Boolean);
+        for (const token of tokens) {
+          const clean = token.replace(/^[^\w\u00C0-\u017F]+|[^\w\u00C0-\u017F]+$/g, '');
+          const normalized = normalizeVoiceText(clean);
+          const wordToken: ScriptWordToken = {
+            globalIndex: globalWordCounter++,
+            lineIndex: lineIdx,
+            wordIndexInLine: lineWords.length,
+            rawWord: token,
+            cleanWord: clean,
+            normalizedWord: normalized,
+            isEmphasis: false
+          };
+          lineWords.push(wordToken);
+          allWords.push(wordToken);
+        }
+      }
+    }
+
+    lines.push({
+      lineIndex: lineIdx,
+      rawText: rawLine,
+      words: lineWords,
+      startGlobalIdx: startIdxForLine,
+      endGlobalIdx: globalWordCounter,
+      isMarkerOnly: false
+    });
+  }
+
+  return { allWords, lines };
 };
 
 export const normalizeVoiceText = (text: string): string => {
